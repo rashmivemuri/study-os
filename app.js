@@ -10,14 +10,14 @@ const CATS = { GATE:"#5aa2ff", CP:"#3ecf8e", SAI:"#c792ea", IIT:"#ffb020", OSS:"
    faster than strict alternation (which kills both streaks). */
 const TEMPLATES = [
   { id:"nc",   title:"NeetCode — 1 problem + write-up", cat:"CP",   min:45, days:["Mon","Tue","Wed","Thu","Fri","Sat","Sun"], pri:5 },
-  { id:"cf",   title:"Codeforces practice set",         cat:"CP",   min:60, days:["Tue","Thu","Sat"], pri:4 },
+  { id:"cf",   title:"Codeforces practice set",         cat:"CP",   min:45, days:["Tue","Thu","Sat"], pri:4 },
   { id:"cfcon",title:"CF contest / virtual + upsolve",  cat:"CP",   min:90, days:["Sun"], pri:4 },
   { id:"algo", title:"GATE Algo (primary focus)",       cat:"GATE", min:75, days:["Mon","Tue","Thu","Sat"], pri:5 },
   { id:"dbms", title:"GATE DBMS (primary focus)",       cat:"GATE", min:75, days:["Wed","Fri","Sun"], pri:5 },
-  { id:"sai",  title:"Sai coursework rotation",         cat:"SAI",  min:60, days:["Mon","Tue","Wed","Thu","Fri","Sat"], pri:4, rotating:["DAA","Found. Data Engg","Web Tech","Emerging Tools","Intel. Embedded Sys","Calculus"] },
-  { id:"saiw", title:"Sai weekend catch-up / assign.",  cat:"SAI",  min:90, days:["Sun"], pri:4 },
-  { id:"oss",  title:"OWASP/OpenCRE — assigned issue → PR", cat:"OSS", min:90, days:["Tue","Thu","Sun"], pri:3 },
-  { id:"rev",  title:"Spaced revision + flashcards",    cat:"REV",  min:20, days:["Mon","Tue","Wed","Thu","Fri","Sat","Sun"], pri:3 },
+  { id:"sai",  title:"Sai coursework rotation",         cat:"SAI",  min:45, days:["Mon","Tue","Wed","Thu","Fri","Sat"], pri:4, rotating:["DAA","Found. Data Engg","Web Tech","Emerging Tools","Intel. Embedded Sys","Calculus"] },
+  { id:"saiw", title:"Sai weekend catch-up / assign.",  cat:"SAI",  min:60, days:["Sun"], pri:4 },
+  { id:"oss",  title:"OWASP/OpenCRE — assigned issue → PR", cat:"OSS", min:60, days:["Mon","Wed","Fri"], pri:3 },
+  { id:"rev",  title:"Spaced revision + flashcards",    cat:"REV",  min:15, days:["Mon","Tue","Wed","Thu","Fri","Sat","Sun"], pri:3 },
 ];
 const GOALS = {
   short: [
@@ -44,7 +44,7 @@ const GOALS = {
 const SCRAPER = `// Paste in Coursera page console (F12), Enter → durations copied.\n(() => {\n  const t = document.body.innerText;\n  const re = /(?:(\\d+)\\s*h[^\\d]{0,3})?(\\d{1,3})\\s*[:m]\\s*(\\d{1,2})?\\s*(?:min|m)?/gi;\n  const lines = [...document.querySelectorAll('a,span,div')]\n    .map(e => e.innerText.trim()).filter(s => s && s.length < 120);\n  const out = [];\n  document.querySelectorAll('*').forEach(() => {});\n  // fallback: grab every mm:ss-looking string with its row label\n  const rows = [...document.querySelectorAll('[data-testid],li,a')].map(e=>e.innerText.replace(/\\s+/g,' ').trim()).filter(Boolean);\n  const pat = /(.{3,80}?)\\s+(\\d{1,2}:\\d{2}(?::\\d{2})?|\\d+\\s*min)/;\n  rows.forEach(r => { const m = r.match(pat); if (m) out.push(m[1].slice(0,60) + ' — ' + m[2]); });\n  const uniq = [...new Set(out)].join('\\n') || t.match(/\\d{1,2}:\\d{2}(:\\d{2})?/g)?.join('\\n') || 'No durations found — copy manually';\n  navigator.clipboard.writeText(uniq).then(()=>alert('Copied '+uniq.split('\\n').length+' lines. Paste into StudyOS → IIT Modules.'));\n})();`;
 
 /* ---------- store ---------- */
-function defState(){ return { checks:{}, backlog:[], modules:[], custom:[], tests:[], college:{}, collegeSeeded:false, log:[], seeded:false, speed:1.25, catchup:false, cap:{Mon:300,Tue:270,Wed:300,Thu:240,Fri:300,Sat:420,Sun:420}, weekOffset:0, seq:1 }; }
+function defState(){ return { checks:{}, backlog:[], modules:[], custom:[], tests:[], college:{}, collegeSeeded:false, log:[], seeded:false, speed:1.5, catchup:false, cap:{Mon:300,Tue:300,Wed:300,Thu:280,Fri:300,Sat:420,Sun:420}, weekOffset:0, seq:1 }; }
 let S;
 try { S = JSON.parse(localStorage.getItem(LSKEY)) || defState(); } catch { S = defState(); }
 S = Object.assign(defState(), S);
@@ -114,7 +114,7 @@ function splitChunk(label, minutes, max=50){
 function buildWeek(offset){
   const dates=weekDates(offset);
   const days=dates.map(d=>({ date:dstr(d), wd:wd(d), cap:S.cap[wd(d)]||300, college:collegeFor(wd(d)), tasks:[] }));
-  const CUT=S.catchup?{oss:45,cf:30,cfcon:60,saiw:60}:{}; // catch-up mode lightens flexible load
+  const CUT=S.catchup?{oss:30,cf:30,cfcon:60,saiw:45}:{}; // catch-up mode lightens flexible load
   const cutMin=t=>CUT[t.id]||t.min;
   // 1) recurring + custom one-offs
   days.forEach((day,di)=>{
@@ -142,18 +142,32 @@ function buildWeek(offset){
       if(byDate[dd]) byDate[dd].tasks.push({ key:`test:${ts.id}:prep${i}`, title:p.title, cat:"IIT", min:p.min, pri:proctored?6:5, kind:"test", fixed:true });
     });
   });
-  // 2) IIT chunks → days with most free space (scaled by playback speed)
+  // 2) IIT chunks → spread EVENLY across all 7 days (water-filling, scaled by playback speed).
+  // Round-robin per course so Java/RDBMS/Optimization all progress daily and finish together
+  // by week's end. Pass 1 never breaches a day's cap; pass 2 only overflows if total > free week.
   const free = day => day.cap - day.tasks.reduce((a,t)=>a+t.min,0);
   const spd = S.speed||1;
   const effMin = m => Math.max(5, Math.round(m/spd));
+  const byCourse={};
   iitVideosLeft().forEach(({mod,v})=>{
-    splitChunk(`${mod.course} W${mod.week}: ${v.label}`, effMin(v.minutes)).forEach(ch=>{
-      days.slice().sort((a,b)=>free(b)-free(a))
-        .find(d=>true); // pick max-free day
-      const target = days.slice().sort((a,b)=>free(b)-free(a))[0];
-      target.tasks.push({ key:`iit:${mod.id}:${v.label}:${ch.label}`, title:"▶ "+ch.label, cat:"IIT", min:ch.minutes, pri:5, kind:"iit", modId:mod.id, vlabel:v.label, chunk:ch.label });
-    });
+    const key=mod.course+' W'+mod.week;
+    (byCourse[key]=byCourse[key]||[]).push(...splitChunk(`${mod.course} W${mod.week}: ${v.label}`, effMin(v.minutes), 35).map(ch=>({mod,v,ch})));
   });
+  const courses=Object.keys(byCourse);
+  const iitLoad=d=>d.tasks.filter(t=>t.kind==="iit").reduce((a,t)=>a+t.min,0);
+  let more=true;
+  while(more){
+    more=false;
+    for(const c of courses){
+      const q=byCourse[c]; if(!q.length) continue;
+      const item=q.shift(); more=true;
+      // least-loaded day that still has room, tightest fit first (cap-safe); overflow only if week is overfull
+      const roomy=days.filter(d=>free(d)>=item.ch.minutes);
+      const target=(roomy.length?roomy.slice().sort((a,b)=>iitLoad(a)-iitLoad(b)||free(a)-free(b))
+                               :days.slice().sort((a,b)=>free(b)-free(a)))[0];
+      target.tasks.push({ key:`iit:${item.mod.id}:${item.v.label}:${item.ch.label}`, title:"▶ "+item.ch.label, cat:"IIT", min:item.ch.minutes, pri:5, kind:"iit", modId:item.mod.id, vlabel:item.v.label, chunk:item.ch.label });
+    }
+  }
   // 3) backlog → leftover free slots, most-overdue first (cap 2 per day to avoid piling)
   const sorted=[...S.backlog].sort((a,b)=>(b.overdue||0)-(a.overdue||0) || b.pri-a.pri);
   sorted.forEach(b=>{
@@ -293,6 +307,11 @@ function runSelfTest(){
     S.catchup=false;
     res.push([cfMin===30?"✓":"✗",`catch-up mode: CF practice lightened 60→${cfMin}m, auto-exits below 60m backlog`]);
   }catch(e){ res.push(["✗","catch-up threw: "+e.message]); }
+  try{
+    const dd=buildWeek(0), perDay=dd.map(d=>d.tasks.filter(x=>x.kind==="iit").reduce((a,x)=>a+x.min,0));
+    const used=perDay.filter(m=>m>0).length, spread=Math.max(...perDay)-Math.min(...perDay);
+    res.push([(used===7&&spread<=120)?"✓":"✗",`IIT spread: all 7 days used (${perDay.join("/")}), max-min gap ${spread}m`]);
+  }catch(e){ res.push(["✗","spread threw: "+e.message]); }
   try{
     const nDays=DAYS.filter(d=>collegeFor(d).length).length, thu=collegeMin("Thu");
     res.push([(nDays>=5&&thu>200)?"✓":"✗",`college blocks: ${nDays} days guarded (Thu ${thu}m), never scheduled over`]);
