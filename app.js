@@ -153,6 +153,14 @@ function buildWeek(offset){
     const key=mod.course+' W'+mod.week;
     (byCourse[key]=byCourse[key]||[]).push(...splitChunk(`${mod.course} W${mod.week}: ${v.label}`, effMin(v.minutes), 35).map(ch=>({mod,v,ch})));
   });
+  // textbook reading per module (raw minutes, not speed-scaled), same even spread
+  S.modules.forEach(mod=>{
+    const tbMin=(mod.textbook ?? 30);
+    if(tbMin>0){
+      const key=mod.course+' W'+mod.week;
+      (byCourse[key]=byCourse[key]||[]).push(...splitChunk(`📖 Textbook: ${mod.course} W${mod.week}`, tbMin, 35).map(ch=>({mod,v:{label:'📖 textbook'},ch,tb:true})));
+    }
+  });
   const courses=Object.keys(byCourse);
   const iitLoad=d=>d.tasks.filter(t=>t.kind==="iit").reduce((a,t)=>a+t.min,0);
   let more=true;
@@ -165,7 +173,7 @@ function buildWeek(offset){
       const roomy=days.filter(d=>free(d)>=item.ch.minutes);
       const target=(roomy.length?roomy.slice().sort((a,b)=>iitLoad(a)-iitLoad(b)||free(a)-free(b))
                                :days.slice().sort((a,b)=>free(b)-free(a)))[0];
-      target.tasks.push({ key:`iit:${item.mod.id}:${item.v.label}:${item.ch.label}`, title:"▶ "+item.ch.label, cat:"IIT", min:item.ch.minutes, pri:5, kind:"iit", modId:item.mod.id, vlabel:item.v.label, chunk:item.ch.label });
+      target.tasks.push({ key:`iit:${item.mod.id}:${item.v.label}:${item.ch.label}`, title:"▶ "+item.ch.label, cat:"IIT", min:item.ch.minutes, pri:5, kind:"iit", tb:!!item.tb, modId:item.mod.id, vlabel:item.v.label, chunk:item.ch.label });
     }
   }
   // 3) backlog → leftover free slots, most-overdue first (cap 2 per day to avoid piling)
@@ -202,7 +210,7 @@ function closeDay(dateStr){
   const day=days.find(d=>d.date===dateStr) || buildWeek(weekOf(dateStr))[0];
   let moved=0;
   day.tasks.forEach(t=>{
-    if(t.kind==="iit") return; // IIT auto-carries via undone videos
+    if(t.kind==="iit"&&!t.tb) return; // IIT videos auto-carry via undone videos
     if(t.kind==="carry") { // still undone → bump overdue
       const b=S.backlog.find(x=>`carry:${x.id}::${dateStr}`===t.key||String(x.id)===String(t.bid));
       if(b && !isDone(dateStr,t.key)) b.overdue=(b.overdue||0)+1;
@@ -249,7 +257,7 @@ function autoRelocate(){
     const days=buildWeek(weekOf(d));
     const day=days.find(x=>x.date===d); if(!day) continue;
     day.tasks.forEach(x=>{
-      if(x.kind==="iit") return;
+      if(x.kind==="iit"&&!x.tb) return; // videos auto-carry; textbook chunks relocate like normal tasks
       if(x.kind==="carry"){
         const b=S.backlog.find(y=>String(y.id)===String(x.bid));
         if(b && !isDone(d,x.key) && !b["_bump_"+d]){ b.overdue=(b.overdue||0)+1; b["_bump_"+d]=1; }
@@ -346,11 +354,11 @@ function renderToday(){
   $("todayStats").textContent=`${done.length}/${day.tasks.length} done · ${pct}% · load ${hrs(load)} / cap ${hrs(cap)}`;
   $("overloadWarn").innerHTML = load>cap ? `<div class="warn">⚠ Overloaded by ${hrs(load-cap)} today. Tip: move "${lowestPri(day)}" to tomorrow's free slot, or raise capacity in Settings.</div>` : "";
   const row=x=>{
-    const checked = x.kind==="iit"? iitChunkDone(x) : isDone(t,x.key);
+    const checked = taskDone(t,x);
     const carry=x.kind==="carry"?'<span class="badge carry">carryover</span>':"";
     const iit=x.kind==="iit"?'<span class="badge iit">IIT</span>':"";
     const test=x.kind==="test"?'<span class="badge testb">test</span>':"";
-    return { checked, html:`<li class="task ${checked?"done":""}"><span class="dot" style="background:${CATS[x.cat]||"#555"}"></span><input type="checkbox" data-d="${t}" data-k="${x.key.replace(/"/g,"&quot;")}" data-iit="${x.kind==="iit"?x.modId+"||"+x.vlabel:""}" ${checked?"checked":""}>
+    return { checked, html:`<li class="task ${checked?"done":""}"><span class="dot" style="background:${CATS[x.cat]||"#555"}"></span><input type="checkbox" data-d="${t}" data-k="${x.key.replace(/"/g,"&quot;")}" data-iit="${(x.kind==="iit"&&!x.tb)?x.modId+"||"+x.vlabel:""}" ${checked?"checked":""}>
       <div><div class="t">${x.title}</div><div class="meta">${x.min} min · P${x.pri} ${carry}${iit}${test}</div></div></li>` };
   };
   const rows=day.tasks.map(row);
@@ -391,6 +399,11 @@ function renderToday(){
   if($("reloLog")) $("reloLog").innerHTML=S.log.length? [...S.log].slice(-6).reverse().map(e=>`<li>• [${e.ts}] ${e.msg}</li>`).join("") : "<li>Nothing relocated yet — unfinished past-day tasks will appear here automatically.</li>";
 }
 function iitChunkDone(x){ const mod=S.modules.find(m=>String(m.id)===String(x.modId)); if(!mod) return false; const v=mod.videos.find(v=>v.label===x.vlabel); return !!(v&&v.done); }
+/* Unified done-state: textbook chunks tick via normal checks; video chunks via video flags. */
+function taskDone(date,x){
+  if(x.kind==="iit"&&!x.tb) return iitChunkDone(x);
+  return isDone(date,x.key);
+}
 function lowestPri(day){ const s=[...day.tasks].sort((a,b)=>a.pri-b.pri); return s.length?s[0].title:"—"; }
 function tip(day){
   const left=iitVideosLeft();
@@ -404,13 +417,13 @@ function streak(){
   let s=0; for(let i=0;i<60;i++){ const d=dstr(addD(new Date(),-i));
     const off=weekOf(d), days=buildWeek(off), day=days.find(x=>x.date===d); if(!day) break;
     if(!day.tasks.length) continue;
-    const dn=day.tasks.filter(x=>x.kind==="iit"?iitChunkDone(x):isDone(d,x.key)).length;
+    const dn=day.tasks.filter(x=>taskDone(d,x)).length;
     if(dn/day.tasks.length>=0.8) s++; else if(i===0) continue; else break;
   } return s;
 }
 function weekPct(){
   const days=buildWeek(S.weekOffset); let a=0,b=0;
-  days.forEach(d=>d.tasks.forEach(t=>{ b++; if(t.kind==="iit"?iitChunkDone(t):isDone(d.date,t.key)) a++; }));
+  days.forEach(d=>d.tasks.forEach(t=>{ b++; if(taskDone(d.date,t)) a++; }));
   return b?Math.round(a/b*100):100;
 }
 
@@ -426,7 +439,7 @@ function renderWeek(){
       <span class="loadbar"><span style="width:${pct}%"></span></span>
       <span class="cap">${load}/${d.cap}${load>d.cap?" · OVER":""}</span></summary>
       ${d.college.map(c=>`<div class="mini college">🎓 ${c.s}–${c.e} ${c.t}</div>`).join("")}
-      ${d.tasks.map(t=>{const dn=t.kind==="iit"?iitChunkDone(t):isDone(d.date,t.key);
+      ${d.tasks.map(t=>{const dn=taskDone(d.date,t);
         return `<div class="mini ${dn?"done":""}"><span class="dot" style="background:${CATS[t.cat]||"#555"}"></span>${dn?"✓":"○"} ${t.title.slice(0,44)} <span class="muted">·${t.min}m</span></div>`;}).join("")}
       ${cm?`<div class="cap">🏫 ${Math.floor(cm/60)}h${cm%60?pads(cm%60):""} college excluded from study load</div>`:""}
     </details>`;
@@ -438,12 +451,14 @@ function renderModules(){
   $("scraperSnippet").textContent=SCRAPER;
   $("moduleList").innerHTML=S.modules.length? S.modules.map(m=>{
     const tot=m.videos.reduce((a,v)=>a+v.minutes,0), dn=m.videos.filter(v=>v.done).length;
-    const spd=S.speed||1, eff=Math.round(tot/spd);
-    return `<div class="mod"><b>${m.course} · Week ${m.week}</b> ${m.title?"· "+m.title:""} — ${dn}/${m.videos.length} videos · ${tot} min raw (~${eff} at ${spd}×)
+    const spd=S.speed||1, eff=Math.round(tot/spd), tb=(m.textbook ?? 30);
+    return `<div class="mod"><b>${m.course} · Week ${m.week}</b> ${m.title?"· "+m.title:""} — ${dn}/${m.videos.length} videos · ${tot} min raw (~${eff} at ${spd}×) + ${tb}m textbook
       <div>${m.videos.map(v=>`<label style="display:block"><input type="checkbox" data-m="${m.id}" data-v="${v.label.replace(/"/g,"&quot;")}" ${v.done?"checked":""}> ${v.label} <span class="muted">(${v.minutes}m)</span></label>`).join("")}</div>
-      <button class="btn danger" data-delmod="${m.id}">Delete module</button></div>`;
+      <div class="row wrap" style="margin-top:6px"><label class="small muted">📖 Textbook min/week <input type="number" min="0" max="300" step="5" value="${tb}" data-tb="${m.id}" style="width:75px"></label>
+      <span style="flex:1"></span><button class="btn danger sm" data-delmod="${m.id}">Delete module</button></div></div>`;
   }).join("") : `<p class="muted small">No modules yet. Paste Week 1 for Java / Statistics / RDBMS to generate this week's IIT blocks.</p>`;
   $("moduleList").querySelectorAll("input[type=checkbox]").forEach(cb=>cb.onchange=()=>toggleIit(cb.dataset.m,cb.dataset.v,cb.checked));
+  $("moduleList").querySelectorAll("[data-tb]").forEach(i=>i.onchange=()=>{ const m=S.modules.find(x=>String(x.id)===i.dataset.tb); if(m){ m.textbook=Math.max(0,+i.value||0); save(); renderAll(); } });
   $("moduleList").querySelectorAll("[data-delmod]").forEach(b=>b.onclick=()=>{ S.modules=S.modules.filter(m=>String(m.id)!==b.dataset.delmod); save(); renderAll(); });
 }
 
@@ -478,7 +493,7 @@ function renderSettings(){
 function seedWeek1(){
   if(S.seeded) return; S.seeded=true;
   if(S.modules.length){ save(); return; }
-  const M=(course,week,title,rows)=>({ id:S.seq++, course, week, title, seed:true,
+  const M=(course,week,title,rows)=>({ id:S.seq++, course, week, title, seed:true, textbook:30,
     videos: rows.map(r=>({ label:r[0], minutes:r[1], done:false })) });
   const addM=m=>{ if(!S.modules.some(x=>x.course===m.course&&String(x.week)===String(m.week))) S.modules.push(m); };
   addM(M("RDBMS",1,"About the Course, Intro to DBMS & Relational Model (3h C-lab excluded)",[
