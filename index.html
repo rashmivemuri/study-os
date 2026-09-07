@@ -20,6 +20,7 @@
 </header>
 
 <main>
+<div id="errBanner" class="warn" style="display:none"></div>
   <!-- TODAY -->
   <section id="tab-today" class="tabpage active">
     <div class="grid2">
@@ -29,6 +30,8 @@
         <p class="muted small" id="todayStats"></p>
         <div id="overloadWarn"></div>
         <div id="autoNotice"></div>
+        <div id="behindBanner"></div>
+        <div id="collegeBanner"></div>
         <ul id="todayList" class="tasklist"></ul>
         <div class="row">
           <button id="closeDayBtn" class="btn primary">End day → carry missed to backlog</button>
@@ -115,11 +118,15 @@
         <div id="mOut" class="muted small"></div>
       </div>
       <div class="card">
-        <h2>Coursera helper (semi-auto)</h2>
-        <p class="muted small">On your open Coursera module page, press <code>F12 → Console</code>, paste this snippet, hit Enter. It copies all video durations to your clipboard — then paste them into the box on the left.</p>
-        <pre id="scraperSnippet" class="code"></pre>
-        <button id="copySnippet" class="btn">Copy snippet</button>
+        <h2>Coursera helper <span class="muted small">semi-auto import</span></h2>
+        <details>
+          <summary class="muted small">How to copy durations from Coursera (tap to expand)</summary>
+          <p class="muted small">On your open Coursera module page, press <code>F12 → Console</code>, paste this snippet, hit Enter. It copies all video durations — then paste them on the left.</p>
+          <pre id="scraperSnippet" class="code"></pre>
+          <button id="copySnippet" class="btn sm">Copy snippet</button>
+        </details>
         <h3 style="margin-top:18px">Saved modules</h3>
+        <div class="row" style="margin-bottom:8px"><button id="reseedBtn" class="btn">↻ Reload Week-1 seed data</button></div>
         <div id="moduleList"></div>
       </div>
     </div>
@@ -129,8 +136,8 @@
   <section id="tab-goals" class="tabpage">
     <div class="grid3" id="goalsGrid"></div>
     <div class="card">
-      <h3>Did I miss anything?</h3>
-      <p class="small">Suggested additions based on your stack: <b>weekly revision slot</b> (already added, 20 min/day), <b>Sunday mock test</b> (folded into GATE Sunday slot), <b>sleep/exercise guardrail</b> (no app can schedule mastery without recovery — protect 7h sleep + 20 min walk), <b>Sai exam-prep buffer</b> in the last 3 weeks of sem (tell me your exam dates and I'll auto-raise Sai priority). Add anything you remember via Quick add or tell me and I'll hardcode it.</p>
+      <h3>Anything missing?</h3>
+      <p class="small muted">Ideas: Sai exam-prep buffer in the last 3 weeks (share exam dates and Sai priority auto-raises), 7h sleep + 20-min walk guardrail. Tell me and I'll hardcode it, or use Quick add.</p>
     </div>
   </section>
 
@@ -153,24 +160,41 @@
       </div>
     </div>
     <div class="card">
-      <h2>How the smart scheduler works</h2>
+      <h2>College hours <span class="muted small">blocked — never scheduled over</span></h2>
+      <p class="muted small">Seeded from the SaiU sheet for Sec 3 + ETA Sec 2. Delete anything that isn't yours.</p>
+      <div id="collegeList"></div>
+      <div class="row wrap" style="margin-top:8px">
+        <select id="cDay"><option>Mon</option><option>Tue</option><option>Wed</option><option>Thu</option><option>Fri</option><option>Sat</option><option>Sun</option></select>
+        <input id="cStart" placeholder="09:15" style="width:80px">
+        <input id="cEnd" placeholder="10:10" style="width:80px">
+        <input id="cTitle" placeholder="Course" style="flex:1;min-width:140px">
+        <button id="cAdd" class="btn sm">Add class</button>
+      </div>
+    </div>
+    <div class="card">
+      <details>
+        <summary><b>How the smart scheduler works</b> <span class="muted small">(tap to expand)</span></summary>
       <ol class="small">
         <li>Fixed recurring load (NeetCode daily, GATE 4+3, Sai 60m, CF 3×+contest, OWASP 3×, revision) is placed first.</li>
         <li>Tests (exam + type-based prep) are date-fixed right after recurring — IIT videos absorb the squeeze and auto-carry, so core subjects are never displaced.</li>
         <li>Remaining IIT video minutes are split into ≤50-min chunks and poured into days with the most free capacity.</li>
         <li>Backlog (missed tasks) is fitted next, highest overdue-days first, into any leftover free slots — never piled onto one day.</li>
-        <li>Overload days turn red and the tip box tells you exactly what to move.</li>
-        <li>Every app start auto-scans the past 7 days and relocates anything unfinished (see log above the backlog).</li>
+        <li>Falling behind (150m+ backlog or 3d overdue) offers a one-click catch-up plan that lightens flexible load until you recover.</li>
+        <li>College hours are blocked and never scheduled over. Overload days turn red with a tip on what shifted.</li>
       </ol>
-      <div class="row">
-        <button id="selfTest" class="btn">▶ Run self-test</button>
+      </details>
+      <div class="row" style="margin-top:10px">
+        <button id="selfTest" class="btn sm">▶ Run self-test</button>
       </div>
       <div id="selfOut" class="small" style="margin-top:8px"></div>
     </div>
   </section>
 </main>
 
-<footer class="muted small center">StudyOS · local-first · data stays in this browser (localStorage) · <span id="ver"></span></footer>
-<script src="app.js"></script>
+<footer class="muted small center">StudyOS · local-first · data stays in this browser (localStorage) · <span id="ver"></span> · <span id="diagLine"></span></footer>
+<script>
+window.addEventListener('error',function(e){var d=document.getElementById('errBanner');if(d){d.style.display='block';d.textContent='⚠ App error: '+(e.message||'unknown error')+' — press Ctrl+Shift+R to hard-refresh. If it persists, copy this exact text and send it to me.';}});
+</script>
+<script src="app.js?v=1.4"></script>
 </body>
 </html>

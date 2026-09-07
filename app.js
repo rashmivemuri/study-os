@@ -44,7 +44,7 @@ const GOALS = {
 const SCRAPER = `// Paste in Coursera page console (F12), Enter → durations copied.\n(() => {\n  const t = document.body.innerText;\n  const re = /(?:(\\d+)\\s*h[^\\d]{0,3})?(\\d{1,3})\\s*[:m]\\s*(\\d{1,2})?\\s*(?:min|m)?/gi;\n  const lines = [...document.querySelectorAll('a,span,div')]\n    .map(e => e.innerText.trim()).filter(s => s && s.length < 120);\n  const out = [];\n  document.querySelectorAll('*').forEach(() => {});\n  // fallback: grab every mm:ss-looking string with its row label\n  const rows = [...document.querySelectorAll('[data-testid],li,a')].map(e=>e.innerText.replace(/\\s+/g,' ').trim()).filter(Boolean);\n  const pat = /(.{3,80}?)\\s+(\\d{1,2}:\\d{2}(?::\\d{2})?|\\d+\\s*min)/;\n  rows.forEach(r => { const m = r.match(pat); if (m) out.push(m[1].slice(0,60) + ' — ' + m[2]); });\n  const uniq = [...new Set(out)].join('\\n') || t.match(/\\d{1,2}:\\d{2}(:\\d{2})?/g)?.join('\\n') || 'No durations found — copy manually';\n  navigator.clipboard.writeText(uniq).then(()=>alert('Copied '+uniq.split('\\n').length+' lines. Paste into StudyOS → IIT Modules.'));\n})();`;
 
 /* ---------- store ---------- */
-function defState(){ return { checks:{}, backlog:[], modules:[], custom:[], tests:[], log:[], seeded:false, speed:1.25, cap:{Mon:300,Tue:300,Wed:300,Thu:300,Fri:300,Sat:420,Sun:420}, weekOffset:0, seq:1 }; }
+function defState(){ return { checks:{}, backlog:[], modules:[], custom:[], tests:[], college:{}, collegeSeeded:false, log:[], seeded:false, speed:1.25, catchup:false, cap:{Mon:300,Tue:270,Wed:300,Thu:240,Fri:300,Sat:420,Sun:420}, weekOffset:0, seq:1 }; }
 let S;
 try { S = JSON.parse(localStorage.getItem(LSKEY)) || defState(); } catch { S = defState(); }
 S = Object.assign(defState(), S);
@@ -113,14 +113,16 @@ function splitChunk(label, minutes, max=50){
 /* Build schedule for a week offset. Pure function of templates+custom+modules+backlog placement. */
 function buildWeek(offset){
   const dates=weekDates(offset);
-  const days=dates.map(d=>({ date:dstr(d), wd:wd(d), cap:S.cap[wd(d)]||300, tasks:[] }));
+  const days=dates.map(d=>({ date:dstr(d), wd:wd(d), cap:S.cap[wd(d)]||300, college:collegeFor(wd(d)), tasks:[] }));
+  const CUT=S.catchup?{oss:45,cf:30,cfcon:60,saiw:60}:{}; // catch-up mode lightens flexible load
+  const cutMin=t=>CUT[t.id]||t.min;
   // 1) recurring + custom one-offs
   days.forEach((day,di)=>{
     TEMPLATES.forEach(t=>{
       if(!t.days.includes(day.wd)) return;
       let title=t.title, extra="";
       if(t.rotating) extra=" · "+t.rotating[di % t.rotating.length];
-      day.tasks.push({ key:`${day.date}::${t.id}`, title:title+extra, cat:t.cat, min:t.min, pri:t.pri, kind:"rec", fixed:true });
+      day.tasks.push({ key:`${day.date}::${t.id}`, title:title+extra, cat:t.cat, min:cutMin(t), pri:t.pri, kind:"rec", fixed:true });
     });
     S.custom.filter(c=>c.date===day.date).forEach(c=>{
       day.tasks.push({ key:`custom:${c.id}`, title:c.title, cat:c.cat||"SAI", min:c.min, pri:c.pri||3, kind:"custom", fixed:true });
@@ -170,12 +172,13 @@ function toggleCheck(date,key,on){
   if(on){ S.checks[date][key]=1; } else delete S.checks[date][key];
   // completing a carry item removes it from backlog
   if(on && key.startsWith("carry:")){ const bid=key.split("::")[0].slice(6); S.backlog=S.backlog.filter(b=>String(b.id)!==bid); }
-  // completing IIT chunk marks video proportionally: mark done when all its chunks checked that week
+  autoRelocate(); // re-fit timetable live on every change
   save(); renderAll();
 }
 function toggleIit(modId,vlabel,on){
   const mod=S.modules.find(m=>String(m.id)===String(modId)); if(!mod) return;
   mod.videos.forEach(v=>{ if(v.label===vlabel) v.done=!!on; });
+  autoRelocate();
   save(); renderAll();
 }
 
@@ -217,6 +220,11 @@ function addLog(msg){
 /* Auto-relocate: scan past 7 days (excluding today). Any unchecked recurring/
    custom task not already in backlog moves to backlog (overdue+1 on re-bump).
    IIT videos auto-carry via undone flags, so they're skipped. Idempotent. */
+function behindInfo(){
+  const n=S.backlog.length, mins=S.backlog.reduce((a,b)=>a+(b.min||0),0);
+  const oldest=S.backlog.reduce((a,b)=>Math.max(a,b.overdue||0),0);
+  return { n, mins, oldest, behind: mins>=150||oldest>=3 };
+}
 function autoRelocate(){
   if(!Array.isArray(S.log)) S.log=[];
   const t=todayStr(); let moved=0;
@@ -240,7 +248,8 @@ function autoRelocate(){
       }
     });
   }
-  if(moved) save();
+  if(S.catchup && S.backlog.reduce((a,b)=>a+(b.min||0),0)<60){ S.catchup=false; addLog('Catch-up complete — full timetable restored'); save(); }
+  else if(moved) save();
   return moved;
 }
 /* Self-test: parser + schedule + backlog placement + idempotent relocate. */
@@ -278,13 +287,26 @@ function runSelfTest(){
     const n1=S.backlog.length; autoRelocate(); const n2=S.backlog.length; autoRelocate(); const n3=S.backlog.length;
     res.push([n2===n3?"✓":"✗",`relocate idempotent: backlog ${n1}→${n2}→${n3} (no dupes on re-run)`]);
   }catch(e){ res.push(["✗","relocate threw: "+e.message]); }
+  try{
+    S.catchup=true;
+    const cfMin=buildWeek(0).flatMap(d=>d.tasks).find(x=>x.key.slice(-4)==="::cf").min;
+    S.catchup=false;
+    res.push([cfMin===30?"✓":"✗",`catch-up mode: CF practice lightened 60→${cfMin}m, auto-exits below 60m backlog`]);
+  }catch(e){ res.push(["✗","catch-up threw: "+e.message]); }
+  try{
+    const nDays=DAYS.filter(d=>collegeFor(d).length).length, thu=collegeMin("Thu");
+    res.push([(nDays>=5&&thu>200)?"✓":"✗",`college blocks: ${nDays} days guarded (Thu ${thu}m), never scheduled over`]);
+  }catch(e){ res.push(["✗","college threw: "+e.message]); }
   save(); renderAll();
   $("selfOut").innerHTML=res.map(r=>`<div>${r[0]} ${r[1]}</div>`).join("");
 }
 
 /* ---------- render ---------- */
 const $=id=>document.getElementById(id);
-function renderAll(){ renderToday(); renderWeek(); renderModules(); renderTests(); renderGoals(); renderSettings(); }
+function renderAll(){ renderToday(); renderWeek(); renderModules(); renderTests(); renderGoals(); renderSettings(); renderDiag(); }
+function renderDiag(){ if(!$("diagLine")) return;
+  $("diagLine").textContent=`${S.modules.length} modules · ${iitVideosLeft().reduce((a,x)=>a+x.v.minutes,0)}m IIT left · ${S.backlog.length} backlog · ${(S.tests||[]).length} tests · ${S.catchup?"catch-up ON":"normal"}`;
+}
 function catBadge(c){ return `<span class="badge" style="border-color:${CATS[c]||"#555"};color:${CATS[c]||"#ccc"}">${c}</span>`; }
 
 function renderToday(){
@@ -304,17 +326,36 @@ function renderToday(){
   const hrs=x=>Math.floor(x/60)+"h "+(x%60)+"m";
   $("todayStats").textContent=`${done.length}/${day.tasks.length} done · ${pct}% · load ${hrs(load)} / cap ${hrs(cap)}`;
   $("overloadWarn").innerHTML = load>cap ? `<div class="warn">⚠ Overloaded by ${hrs(load-cap)} today. Tip: move "${lowestPri(day)}" to tomorrow's free slot, or raise capacity in Settings.</div>` : "";
-  $("todayList").innerHTML=day.tasks.map(x=>{
+  const row=x=>{
     const checked = x.kind==="iit"? iitChunkDone(x) : isDone(t,x.key);
     const carry=x.kind==="carry"?'<span class="badge carry">carryover</span>':"";
     const iit=x.kind==="iit"?'<span class="badge iit">IIT</span>':"";
-    return `<li class="task ${checked?"done":""}"><input type="checkbox" data-d="${t}" data-k="${x.key.replace(/"/g,"&quot;")}" data-iit="${x.kind==="iit"?x.modId+"||"+x.vlabel:""}" ${checked?"checked":""}>
-      <div><div class="t">${x.title}</div><div class="meta">${catBadge(x.cat)} ${x.min} min · priority ${x.pri} ${carry}${iit}</div></div></li>`;
-  }).join("");
+    const test=x.kind==="test"?'<span class="badge testb">test</span>':"";
+    return { checked, html:`<li class="task ${checked?"done":""}"><span class="dot" style="background:${CATS[x.cat]||"#555"}"></span><input type="checkbox" data-d="${t}" data-k="${x.key.replace(/"/g,"&quot;")}" data-iit="${x.kind==="iit"?x.modId+"||"+x.vlabel:""}" ${checked?"checked":""}>
+      <div><div class="t">${x.title}</div><div class="meta">${x.min} min · P${x.pri} ${carry}${iit}${test}</div></div></li>` };
+  };
+  const rows=day.tasks.map(row);
+  const open=rows.filter(r=>!r.checked), shut=rows.filter(r=>r.checked);
+  $("todayList").innerHTML=open.map(r=>r.html).join("")+
+    (shut.length?`<details class="donebox"><summary>Done (${shut.length}) — tap to review</summary><ul class="tasklist">${shut.map(r=>r.html).join("")}</ul></details>`:"")+
+    (day.tasks.length?"":`<li class="muted small">Nothing scheduled — enjoy the breather.</li>`);
   $("todayList").querySelectorAll("input").forEach(cb=>cb.onchange=()=>{
     if(cb.dataset.iit) toggleIit(cb.dataset.iit.split("||")[0], cb.dataset.iit.split("||")[1], cb.checked);
     else toggleCheck(cb.dataset.d, cb.dataset.k, cb.checked);
   });
+  // college banner (blocked hours today)
+  if($("collegeBanner")) $("collegeBanner").innerHTML=day.college.length?
+    `<div class="collegebar">🏫 College today · ${day.college.map(c=>`${c.s}–${c.e} ${c.t}`).join(" &nbsp;·&nbsp; ")}</div>`:"";
+  // behind / catch-up banner
+  const bi=behindInfo();
+  if($("behindBanner")){
+    let bh="";
+    if(S.catchup) bh=`<div class="tip ok">🚀 <b>Catch-up mode is reshaping your timetable</b> — lighter CF/OWASP load (up to ~75m/day freed) until backlog drops below 60m. <button id="exitCatchupBtn" class="btn sm">Exit</button></div>`;
+    else if(bi.behind) bh=`<div class="tip warnb">📉 <b>Lagging: ${bi.n} tasks · ${bi.mins}m · oldest ${bi.oldest}d overdue.</b> Apply the catch-up plan and the timetable re-fits itself. <button id="catchupBtn" class="btn sm primary">Apply catch-up plan</button></div>`;
+    $("behindBanner").innerHTML=bh;
+    if($("catchupBtn")) $("catchupBtn").onclick=()=>{ S.catchup=true; addLog("Catch-up plan applied — CF/OWASP lightened"); save(); renderAll(); };
+    if($("exitCatchupBtn")) $("exitCatchupBtn").onclick=()=>{ S.catchup=false; addLog("Catch-up exited manually"); save(); renderAll(); };
+  }
   // backlog
   $("backlogCount").textContent=S.backlog.length+" open";
   $("backlogList").innerHTML=S.backlog.length? S.backlog.map(b=>
@@ -359,14 +400,20 @@ function renderWeek(){
   $("weekRange").textContent=dates[0].toDateString()+" → "+dates[6].toDateString();
   $("weekGrid").innerHTML=days.map(d=>{
     const load=d.tasks.reduce((a,t)=>a+t.min,0);
-    const isT=d.date===todayStr();
-    return `<div class="day ${load>d.cap?"over":""} ${isT?"today":""}"><h4>${d.wd} ${d.date.slice(5)}</h4>
-      <div class="cap">${load}/${d.cap} min ${load>d.cap?"· OVER":""}</div>
+    const isT=d.date===todayStr(), cm=collegeMin(d.wd);
+    const pct=Math.min(100,Math.round(load/Math.max(1,d.cap)*100));
+    return `<details class="day ${load>d.cap?"over":""} ${isT?"today":""}" ${isT?"open":""}>
+      <summary><span class="dname">${d.wd} <span class="muted">${d.date.slice(5)}</span></span>
+      <span class="loadbar"><span style="width:${pct}%"></span></span>
+      <span class="cap">${load}/${d.cap}${load>d.cap?" · OVER":""}</span></summary>
+      ${d.college.map(c=>`<div class="mini college">🎓 ${c.s}–${c.e} ${c.t}</div>`).join("")}
       ${d.tasks.map(t=>{const dn=t.kind==="iit"?iitChunkDone(t):isDone(d.date,t.key);
-        return `<div class="mini ${dn?"done":""}">${dn?"✓":"○"} ${t.title.slice(0,44)} <span class="muted">·${t.min}m</span></div>`;}).join("")}
-    </div>`;
+        return `<div class="mini ${dn?"done":""}"><span class="dot" style="background:${CATS[t.cat]||"#555"}"></span>${dn?"✓":"○"} ${t.title.slice(0,44)} <span class="muted">·${t.min}m</span></div>`;}).join("")}
+      ${cm?`<div class="cap">🏫 ${Math.floor(cm/60)}h${cm%60?pads(cm%60):""} college excluded from study load</div>`:""}
+    </details>`;
   }).join("");
 }
+function pads(n){ return String(n).padStart(2,"0"); }
 
 function renderModules(){
   $("scraperSnippet").textContent=SCRAPER;
@@ -400,6 +447,11 @@ function renderGoals(){  const card=(t,arr,c)=>`<div class="card"><h3>${t}</h3><
 function renderSettings(){
   $("capGrid").innerHTML=DAYS.map(d=>`<label>${d}<input type="number" min="0" max="720" step="15" data-cap="${d}" value="${S.cap[d]}"></label>`).join("");
   if($("speedSel")) $("speedSel").value=String(S.speed||1);
+  if($("collegeList")) $("collegeList").innerHTML=DAYS.map(d=>{
+    const cs=collegeFor(d);
+    return `<div class="crow"><b>${d}</b> ${cs.length?cs.map((c,i)=>`<span class="chip">🎓 ${c.s}–${c.e} ${c.t} <a href="#" data-cday="${d}" data-cidx="${i}">✕</a></span>`).join(""):'<span class="muted small">no classes</span>'}</div>`;
+  }).join("");
+  if($("collegeList")) $("collegeList").querySelectorAll("[data-cday]").forEach(a=>a.onclick=e=>{ e.preventDefault(); S.college[a.dataset.cday].splice(+a.dataset.cidx,1); save(); renderAll(); });
 }
 
 /* Seed Week-1 modules (videos + readings; discussion prompts & labs excluded).
@@ -407,9 +459,10 @@ function renderSettings(){
 function seedWeek1(){
   if(S.seeded) return; S.seeded=true;
   if(S.modules.length){ save(); return; }
-  const M=(course,week,title,rows)=>({ id:S.seq++, course, week, title,
+  const M=(course,week,title,rows)=>({ id:S.seq++, course, week, title, seed:true,
     videos: rows.map(r=>({ label:r[0], minutes:r[1], done:false })) });
-  S.modules.push(M("RDBMS",1,"About the Course, Intro to DBMS & Relational Model (3h C-lab excluded)",[
+  const addM=m=>{ if(!S.modules.some(x=>x.course===m.course&&String(x.week)===String(m.week))) S.modules.push(m); };
+  addM(M("RDBMS",1,"About the Course, Intro to DBMS & Relational Model (3h C-lab excluded)",[
     ["About the Course",11],["Purpose of Database Systems",7],["Drawbacks of File Systems",11],
     ["Data Abstractions",5],["Data Model",5],["Relation Data Model",6],["DDL and DML",7],
     ["SQL Query Language",5],["History of Database Systems and Conclusion",7],["Learning Objectives & Recap",3],
@@ -418,13 +471,13 @@ function seedWeek1(){
     ["📖 Books and References",10],["📖 Week 01 - Lecture Slides",60],["📖 Syllabus for Next Assessment",10],
     ["📖 Topics to be covered in lab",10],["📖 Solutions: Database File Handling in C",10]
   ]));
-  S.modules.push(M("Java",1,"Overview of JAVA Programming Language (4h lab excluded)",[
+  addM(M("Java",1,"Overview of JAVA Programming Language (4h lab excluded)",[
     ["Course Introduction",3],["Why study JAVA",10],["History of JAVA",9],
     ["Features of JAVA Programming",10],["Basics of Object-Oriented Programming",9],
     ["Three principles of Object-Oriented Programming",20],["Week 1 Lab Recording",209],
     ["📖 Reference Books",2],["📖 Lecture Slides",10],["📖 Lab Exercises",10]
   ]));
-  S.modules.push(M("Optimization",1,"Fundamentals of Optimization",[
+  addM(M("Optimization",1,"Fundamentals of Optimization",[
     ["Meet your instructor & Course Introduction",14],["Modeling optimization problems",1],
     ["Formulation of optimization problem part-1",16],["Formulation of optimization problem part-2",10],
     ["Mathematical Foundations Part-1",23],["Mathematical Foundations Part-2",18],
@@ -433,8 +486,27 @@ function seedWeek1(){
   addLog("Seeded Week-1 modules: RDBMS, Java, Optimization");
   save();
 }
-
-/* ---------- events ---------- */
+/* College timetable (blocked hours — never scheduled over).
+   Seeded from the SaiU sheet for SCDS Y2 Sec 3 + ETA Sec 2. Editable in Settings. */
+function toMin(hhmm){ const p=hhmm.split(':'),a=+p[0],b=+(p[1]||0); return a*60+b; }
+function collegeFor(wd){ return (S.college&&S.college[wd])||[]; }
+function collegeMin(wd){ return collegeFor(wd).reduce((a,c)=>a+Math.max(0,toMin(c.e)-toMin(c.s)),0); }
+function seedCollege(){
+  if(S.collegeSeeded) return; S.collegeSeeded=true;
+  if(!S.college||!Object.keys(S.college).length){
+    const C=(s,e,t)=>({s,e,t});
+    S.college={
+      Mon:[C('09:15','10:10','Linear Algebra Sec 3 (?)'),C('10:15','11:10','Linear Algebra Sec 3 (?)'),C('15:00','15:55','Emerging Tools Sec 2 (Sonar)'),C('16:00','16:55','Web Tech Sec 3 (Rupam)')],
+      Tue:[C('11:15','12:10','DAA Sec 3 (David)'),C('12:15','13:10','DAA Sec 3 (David)'),C('14:00','14:55','Web Tech Sec 3 (Rupam)')],
+      Wed:[C('09:15','10:10','Data Engg Sec 3 (Mariya)'),C('12:15','13:10','Linear Algebra Sec 3 (?)')],
+      Thu:[C('09:15','10:10','Emerging Tools Sec 2 (Sonar)'),C('10:15','11:10','Web Tech Sec 3 (Rupam)'),C('11:15','12:10','DAA Sec 3 (David)'),C('13:00','13:55','Data Engg Sec 3 (Mariya)'),C('14:00','14:55','Data Engg Sec 3 (Mariya)')],
+      Fri:[C('10:15','11:10','Web Tech Sec 3 (Rupam)'),C('11:15','12:10','Linear Algebra Sec 3 (?)'),C('13:00','13:55','Emerging Tools Sec 2 (Sonar)')],
+      Sat:[],Sun:[]
+    };
+    addLog('Seeded college timetable (Sec 3 + ETA Sec 2)');
+  }
+  save();
+}
 document.querySelectorAll("#tabs button").forEach(b=>b.onclick=()=>{
   document.querySelectorAll("#tabs button").forEach(x=>x.classList.remove("active"));
   document.querySelectorAll(".tabpage").forEach(x=>x.classList.remove("active"));
@@ -480,13 +552,21 @@ $("addAltTests").onclick=()=>{
 $("saveCap").onclick=()=>{ document.querySelectorAll("[data-cap]").forEach(i=>S.cap[i.dataset.cap]=+i.value||0); save(); renderAll(); alert("Capacity saved — schedule rebuilt."); };
 $("resetAll").onclick=()=>{ if(confirm("Wipe all StudyOS data?")){ localStorage.removeItem(LSKEY); S=defState(); save(); renderAll(); } };
 $("selfTest").onclick=runSelfTest;
+$("reseedBtn").onclick=()=>{ S.modules=(S.modules||[]).filter(m=>!m.seed); S.seeded=false; seedWeek1(); save(); renderAll(); alert("Week-1 seed reloaded — modules you added yourself were kept."); };
+$("cAdd").onclick=()=>{
+  const d=$("cDay").value, s=$("cStart").value.trim(), e=$("cEnd").value.trim(), ti=$("cTitle").value.trim()||"Class";
+  if(!/^\d{1,2}:\d{2}$/.test(s)||!/^\d{1,2}:\d{2}$/.test(e)){ alert("Use HH:MM format, e.g. 09:15 and 10:10."); return; }
+  (S.college[d]=S.college[d]||[]).push({s,e,t:ti}); S.college[d].sort((a,b)=>a.s<b.s?-1:1);
+  $("cStart").value="";$("cEnd").value="";$("cTitle").value=""; save(); renderAll();
+};
 if($("speedSel")) $("speedSel").onchange=e=>{ S.speed=parseFloat(e.target.value)||1; save(); renderAll(); };
-$("ver").textContent="v1.2 · "+todayStr();
+$("ver").textContent="v1.4 · "+todayStr();
 (function init(){
   const q=$("qaDate"); if(q) q.value=todayStr();
   if($("tStart")&&!$("tStart").value){ const n=new Date(); $("tStart").value=dstr(addD(n,(7-n.getDay())%7||7)); } // default: next Sunday
   if(!S.installed){ S.installed=todayStr(); save(); } // anchor: only relocate days tracked after install
   seedWeek1(); // one-time Week-1 module seed
+  seedCollege(); // one-time college timetable seed
   const moved=autoRelocate(); // intelligent relocation runs on every start
   renderAll();
   if(moved>0 && $("autoNotice")) $("autoNotice").innerHTML=`<div class="warn" style="border-color:var(--warn);color:#ffe1a8;background:#241c08">⟳ Auto-relocated <b>${moved}</b> unfinished task(s) from past days into your backlog — already fitted into your next free slots. Details in the Relocation log.</div>`;
