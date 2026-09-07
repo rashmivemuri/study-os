@@ -494,13 +494,19 @@ function collegeMin(wd){ return collegeFor(wd).reduce((a,c)=>a+Math.max(0,toMin(
 function seedCollege(){
   // cleanup runs always: drop Linear Algebra blocks (not taken) from any existing data
   if(S.college) DAYS.forEach(d=>{ S.college[d]=(S.college[d]||[]).filter(c=>c.t.indexOf('Linear Algebra')<0); });
+  // ensure IES blocks exist on all installs (Tue+Wed doubles, Dr. Ashok — single Sec 1 offering)
+  [['Tue','15:00','15:55'],['Tue','16:00','16:55'],['Wed','15:00','15:55'],['Wed','16:00','16:55']].forEach(([d,s,e])=>{
+    S.college[d]=S.college[d]||[];
+    if(!S.college[d].some(c=>c.s===s&&/Embed|INTT/.test(c.t))) S.college[d].push({s,e,t:'Intelligent Embedded Sys (Dr. Ashok)'});
+    S.college[d].sort((a,b)=>a.s<b.s?-1:1);
+  });
   if(S.collegeSeeded){ save(); return; } S.collegeSeeded=true;
   if(!S.college||!Object.keys(S.college).length){
     const C=(s,e,t)=>({s,e,t});
     S.college={
       Mon:[C('15:00','15:55','Emerging Tools Sec 2 (Sonar)'),C('16:00','16:55','Web Tech Sec 3 (Rupam)')],
-      Tue:[C('11:15','12:10','DAA Sec 3 (David)'),C('12:15','13:10','DAA Sec 3 (David)'),C('14:00','14:55','Web Tech Sec 3 (Rupam)')],
-      Wed:[C('09:15','10:10','Data Engg Sec 3 (Mariya)')],
+      Tue:[C('11:15','12:10','DAA Sec 3 (David)'),C('12:15','13:10','DAA Sec 3 (David)'),C('14:00','14:55','Web Tech Sec 3 (Rupam)'),C('15:00','15:55','Intelligent Embedded Sys (Dr. Ashok)'),C('16:00','16:55','Intelligent Embedded Sys (Dr. Ashok)')],
+      Wed:[C('09:15','10:10','Data Engg Sec 3 (Mariya)'),C('15:00','15:55','Intelligent Embedded Sys (Dr. Ashok)'),C('16:00','16:55','Intelligent Embedded Sys (Dr. Ashok)')],
       Thu:[C('09:15','10:10','Emerging Tools Sec 2 (Sonar)'),C('10:15','11:10','Web Tech Sec 3 (Rupam)'),C('11:15','12:10','DAA Sec 3 (David)'),C('13:00','13:55','Data Engg Sec 3 (Mariya)'),C('14:00','14:55','Data Engg Sec 3 (Mariya)')],
       Fri:[C('10:15','11:10','Web Tech Sec 3 (Rupam)'),C('13:00','13:55','Emerging Tools Sec 2 (Sonar)')],
       Sat:[],Sun:[]
