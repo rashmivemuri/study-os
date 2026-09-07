@@ -2,7 +2,7 @@
 "use strict";
 const LSKEY = "studyOS.v1";
 const DAYS = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
-const CATS = { GATE:"#5aa2ff", CP:"#3ecf8e", SAI:"#c792ea", IIT:"#ffb020", OSS:"#ff7ab2", REV:"#8be9fd" };
+const CATS = { GATE:"#7aa5ff", CP:"#34d399", SAI:"#c4b5fd", IIT:"#fbbf24", OSS:"#f472b6", REV:"#67e8f9" };
 
 /* Hardcoded recurring program (realistic ~5h wkday / 7h wkend self-study).
    Your call of "1 neetcode daily mandatory + alternate CF" is softened on purpose:
