@@ -492,15 +492,17 @@ function toMin(hhmm){ const p=hhmm.split(':'),a=+p[0],b=+(p[1]||0); return a*60+
 function collegeFor(wd){ return (S.college&&S.college[wd])||[]; }
 function collegeMin(wd){ return collegeFor(wd).reduce((a,c)=>a+Math.max(0,toMin(c.e)-toMin(c.s)),0); }
 function seedCollege(){
-  if(S.collegeSeeded) return; S.collegeSeeded=true;
+  // cleanup runs always: drop Linear Algebra blocks (not taken) from any existing data
+  if(S.college) DAYS.forEach(d=>{ S.college[d]=(S.college[d]||[]).filter(c=>c.t.indexOf('Linear Algebra')<0); });
+  if(S.collegeSeeded){ save(); return; } S.collegeSeeded=true;
   if(!S.college||!Object.keys(S.college).length){
     const C=(s,e,t)=>({s,e,t});
     S.college={
-      Mon:[C('09:15','10:10','Linear Algebra Sec 3 (?)'),C('10:15','11:10','Linear Algebra Sec 3 (?)'),C('15:00','15:55','Emerging Tools Sec 2 (Sonar)'),C('16:00','16:55','Web Tech Sec 3 (Rupam)')],
+      Mon:[C('15:00','15:55','Emerging Tools Sec 2 (Sonar)'),C('16:00','16:55','Web Tech Sec 3 (Rupam)')],
       Tue:[C('11:15','12:10','DAA Sec 3 (David)'),C('12:15','13:10','DAA Sec 3 (David)'),C('14:00','14:55','Web Tech Sec 3 (Rupam)')],
-      Wed:[C('09:15','10:10','Data Engg Sec 3 (Mariya)'),C('12:15','13:10','Linear Algebra Sec 3 (?)')],
+      Wed:[C('09:15','10:10','Data Engg Sec 3 (Mariya)')],
       Thu:[C('09:15','10:10','Emerging Tools Sec 2 (Sonar)'),C('10:15','11:10','Web Tech Sec 3 (Rupam)'),C('11:15','12:10','DAA Sec 3 (David)'),C('13:00','13:55','Data Engg Sec 3 (Mariya)'),C('14:00','14:55','Data Engg Sec 3 (Mariya)')],
-      Fri:[C('10:15','11:10','Web Tech Sec 3 (Rupam)'),C('11:15','12:10','Linear Algebra Sec 3 (?)'),C('13:00','13:55','Emerging Tools Sec 2 (Sonar)')],
+      Fri:[C('10:15','11:10','Web Tech Sec 3 (Rupam)'),C('13:00','13:55','Emerging Tools Sec 2 (Sonar)')],
       Sat:[],Sun:[]
     };
     addLog('Seeded college timetable (Sec 3 + ETA Sec 2)');
