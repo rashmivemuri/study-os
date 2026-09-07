@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>StudyOS — Personal Command Center</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand"><span class="logo">◈</span> StudyOS <span class="sub">personal command center</span></div>
+  <nav class="tabs" id="tabs">
+    <button data-tab="today" class="active">Today</button>
+    <button data-tab="week">Week</button>
+    <button data-tab="iit">IIT Modules</button>
+    <button data-tab="goals">Goals</button>
+    <button data-tab="settings">Settings</button>
+  </nav>
+  <div class="today-label" id="todayLabel"></div>
+</header>
+
+<main>
+  <!-- TODAY -->
+  <section id="tab-today" class="tabpage active">
+    <div class="grid2">
+      <div class="card">
+        <h2>Today's checklist <span class="muted" id="todayDate"></span></h2>
+        <div class="progress"><div id="todayBar"></div></div>
+        <p class="muted small" id="todayStats"></p>
+        <div id="overloadWarn"></div>
+        <div id="autoNotice"></div>
+        <ul id="todayList" class="tasklist"></ul>
+        <div class="row">
+          <button id="closeDayBtn" class="btn primary">End day → carry missed to backlog</button>
+          <button id="redistBtn" class="btn">⟳ Smart redistribute backlog</button>
+        </div>
+        <p class="muted small">Missed items are <b>not deleted</b> — they go to the backlog queue and are auto-inserted into your next free slots, highest-overdue first.</p>
+      </div>
+      <div>
+        <div class="card">
+          <h3>Backlog <span id="backlogCount" class="pill"></span></h3>
+          <ul id="backlogList" class="tasklist"></ul>
+          <h3 style="margin-top:14px">Relocation log <span class="muted small">(auto-moves)</span></h3>
+          <ul id="reloLog" class="tasklist small muted"></ul>
+        </div>
+        <div class="card">
+          <h3>Streak &amp; week</h3>
+          <div class="statrow">
+            <div class="stat"><div class="statnum" id="streakNum">0</div><div class="statlbl">day streak (≥80%)</div></div>
+            <div class="stat"><div class="statnum" id="weekPct">0%</div><div class="statlbl">week done</div></div>
+            <div class="stat"><div class="statnum" id="iitLeft">0m</div><div class="statlbl">IIT video left</div></div>
+          </div>
+          <div id="smartTip" class="tip"></div>
+        </div>
+        <div class="card">
+          <h3>Quick add (one-off for a date)</h3>
+          <div class="row wrap">
+            <input id="qaTitle" placeholder="e.g. Sai DAA assignment 3" style="flex:2">
+            <input id="qaDate" type="date" style="flex:1">
+            <input id="qaMin" type="number" min="10" step="5" value="60" style="width:90px" title="minutes">
+            <button id="qaAdd" class="btn primary">Add</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- WEEK -->
+  <section id="tab-week" class="tabpage">
+    <div class="card">
+      <div class="row between">
+        <h2>Week plan <span class="muted small" id="weekRange"></span></h2>
+        <div class="row">
+          <button id="prevWk" class="btn">‹ Prev</button>
+          <button id="thisWk" class="btn">This week</button>
+          <button id="nextWk" class="btn">Next ›</button>
+        </div>
+      </div>
+      <p class="muted small">Capacity = your self-study minutes per day (edit in Settings). Load = recurring + IIT chunks + backlog + one-offs. Red = overloaded day.</p>
+      <div id="weekGrid" class="weekgrid"></div>
+    </div>
+  </section>
+
+  <!-- IIT -->
+  <section id="tab-iit" class="tabpage">
+    <div class="grid2">
+      <div class="card">
+        <h2>Add week's module</h2>
+        <p class="muted small">I can't log into Coursera for you (login wall), so paste the week's video list here. The parser accepts <code>mm:ss</code>, <code>h:mm:ss</code>, <code>12 min</code>, <code>1h 20m</code> — one video per line.</p>
+        <div class="row wrap">
+          <select id="mCourse">
+            <option>Java</option><option>Statistics</option><option>RDBMS</option><option>Optimization</option>
+          </select>
+          <input id="mWeek" type="number" min="1" max="20" value="1" style="width:80px" title="week number">
+          <input id="mTitle" placeholder="Module title (optional)" style="flex:1">
+        </div>
+        <textarea id="mPaste" rows="7" placeholder="Example:&#10;Intro to OOP — 12:34&#10;Classes & objects — 45:10&#10;Inheritance 1h 02:15&#10;Practice quiz — 20 min"></textarea>
+        <div class="row">
+          <button id="mPreview" class="btn">Preview parse</button>
+          <button id="mSave" class="btn primary">Save module &amp; schedule it</button>
+        </div>
+        <div id="mOut" class="muted small"></div>
+      </div>
+      <div class="card">
+        <h2>Coursera helper (semi-auto)</h2>
+        <p class="muted small">On your open Coursera module page, press <code>F12 → Console</code>, paste this snippet, hit Enter. It copies all video durations to your clipboard — then paste them into the box on the left.</p>
+        <pre id="scraperSnippet" class="code"></pre>
+        <button id="copySnippet" class="btn">Copy snippet</button>
+        <h3 style="margin-top:18px">Saved modules</h3>
+        <div id="moduleList"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- GOALS -->
+  <section id="tab-goals" class="tabpage">
+    <div class="grid3" id="goalsGrid"></div>
+    <div class="card">
+      <h3>Did I miss anything?</h3>
+      <p class="small">Suggested additions based on your stack: <b>weekly revision slot</b> (already added, 20 min/day), <b>Sunday mock test</b> (folded into GATE Sunday slot), <b>sleep/exercise guardrail</b> (no app can schedule mastery without recovery — protect 7h sleep + 20 min walk), <b>Sai exam-prep buffer</b> in the last 3 weeks of sem (tell me your exam dates and I'll auto-raise Sai priority). Add anything you remember via Quick add or tell me and I'll hardcode it.</p>
+    </div>
+  </section>
+
+  <!-- SETTINGS -->
+  <section id="tab-settings" class="tabpage">
+    <div class="card">
+      <h2>Daily self-study capacity (minutes)</h2>
+      <p class="muted small">College hours excluded. Defaults: 300 weekdays (5h), 420 weekends (7h). Lower it if you have heavy college days — the scheduler re-fits IIT + backlog automatically.</p>
+      <div id="capGrid" class="capgrid"></div>
+      <div class="row wrap" style="margin-top:12px;align-items:flex-end">
+        <label class="small muted">IIT playback speed<br>
+          <select id="speedSel">
+            <option value="1">1×</option><option value="1.25">1.25×</option>
+            <option value="1.5">1.5×</option><option value="2">2×</option>
+          </select>
+        </label>
+      <div class="row" style="margin-top:12px">
+        <button id="saveCap" class="btn primary">Save &amp; rebuild schedule</button>
+        <button id="resetAll" class="btn danger">Reset all data</button>
+      </div>
+    </div>
+    <div class="card">
+      <h2>How the smart scheduler works</h2>
+      <ol class="small">
+        <li>Fixed recurring load (NeetCode daily, GATE 4+3, Sai 60m, CF 3×+contest, OWASP 3×, revision) is placed first.</li>
+        <li>Remaining IIT video minutes are split into ≤50-min chunks and poured into days with the most free capacity.</li>
+        <li>Backlog (missed tasks) is fitted next, highest overdue-days first, into any leftover free slots — never piled onto one day.</li>
+        <li>Overload days turn red and the tip box tells you exactly what to move.</li>
+        <li>Every app start auto-scans the past 7 days and relocates anything unfinished (see log above the backlog).</li>
+      </ol>
+      <div class="row">
+        <button id="selfTest" class="btn">▶ Run self-test</button>
+      </div>
+      <div id="selfOut" class="small" style="margin-top:8px"></div>
+    </div>
+  </section>
+</main>
+
+<footer class="muted small center">StudyOS · local-first · data stays in this browser (localStorage) · <span id="ver"></span></footer>
+<script src="app.js"></script>
+</body>
+</html>
