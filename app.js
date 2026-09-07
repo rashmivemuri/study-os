@@ -44,7 +44,7 @@ const GOALS = {
 const SCRAPER = `// Paste in Coursera page console (F12), Enter → durations copied.\n(() => {\n  const t = document.body.innerText;\n  const re = /(?:(\\d+)\\s*h[^\\d]{0,3})?(\\d{1,3})\\s*[:m]\\s*(\\d{1,2})?\\s*(?:min|m)?/gi;\n  const lines = [...document.querySelectorAll('a,span,div')]\n    .map(e => e.innerText.trim()).filter(s => s && s.length < 120);\n  const out = [];\n  document.querySelectorAll('*').forEach(() => {});\n  // fallback: grab every mm:ss-looking string with its row label\n  const rows = [...document.querySelectorAll('[data-testid],li,a')].map(e=>e.innerText.replace(/\\s+/g,' ').trim()).filter(Boolean);\n  const pat = /(.{3,80}?)\\s+(\\d{1,2}:\\d{2}(?::\\d{2})?|\\d+\\s*min)/;\n  rows.forEach(r => { const m = r.match(pat); if (m) out.push(m[1].slice(0,60) + ' — ' + m[2]); });\n  const uniq = [...new Set(out)].join('\\n') || t.match(/\\d{1,2}:\\d{2}(:\\d{2})?/g)?.join('\\n') || 'No durations found — copy manually';\n  navigator.clipboard.writeText(uniq).then(()=>alert('Copied '+uniq.split('\\n').length+' lines. Paste into StudyOS → IIT Modules.'));\n})();`;
 
 /* ---------- store ---------- */
-function defState(){ return { checks:{}, backlog:[], modules:[], custom:[], log:[], seeded:false, speed:1.25, cap:{Mon:300,Tue:300,Wed:300,Thu:300,Fri:300,Sat:420,Sun:420}, weekOffset:0, seq:1 }; }
+function defState(){ return { checks:{}, backlog:[], modules:[], custom:[], tests:[], log:[], seeded:false, speed:1.25, cap:{Mon:300,Tue:300,Wed:300,Thu:300,Fri:300,Sat:420,Sun:420}, weekOffset:0, seq:1 }; }
 let S;
 try { S = JSON.parse(localStorage.getItem(LSKEY)) || defState(); } catch { S = defState(); }
 S = Object.assign(defState(), S);
@@ -126,6 +126,20 @@ function buildWeek(offset){
       day.tasks.push({ key:`custom:${c.id}`, title:c.title, cat:c.cat||"SAI", min:c.min, pri:c.pri||3, kind:"custom", fixed:true });
     });
   });
+  // 1b) tests: exam-day blocks + type-based prep, date-fixed right after recurring
+  // so core subjects are never displaced — IIT videos absorb the squeeze and auto-carry.
+  const byDate={}; days.forEach(d=>byDate[d.date]=d);
+  (S.tests||[]).forEach(ts=>{
+    const proctored=ts.type==="proctored";
+    if(byDate[ts.date]) byDate[ts.date].tasks.push({ key:`test:${ts.id}:exam`, title:`📝 ${proctored?"Proctored":"Non-proctored"} test: ${ts.course}`, cat:"IIT", min:proctored?120:60, pri:6, kind:"test", fixed:true });
+    const preps = proctored
+      ? [{off:2,title:`📝 Test prep (${ts.course}): full revision`,min:90},{off:1,title:`📝 Test prep (${ts.course}): mock + formula sheet`,min:60}]
+      : [{off:1,title:`📝 Test prep (${ts.course}): quick review`,min:45}];
+    preps.forEach((p,i)=>{
+      const dd=dstr(addD(parseD(ts.date),-p.off));
+      if(byDate[dd]) byDate[dd].tasks.push({ key:`test:${ts.id}:prep${i}`, title:p.title, cat:"IIT", min:p.min, pri:proctored?6:5, kind:"test", fixed:true });
+    });
+  });
   // 2) IIT chunks → days with most free space (scaled by playback speed)
   const free = day => day.cap - day.tasks.reduce((a,t)=>a+t.min,0);
   const spd = S.speed||1;
@@ -147,7 +161,7 @@ function buildWeek(offset){
     t.tasks.push({ key:`carry:${b.id}::${t.date}`, title:"↩ "+b.title, cat:b.cat, min:b.min, pri:b.pri, kind:"carry", bid:b.id });
   });
   // order: fixed first by priority, then iit, then carry
-  days.forEach(d=>d.tasks.sort((a,b)=>({rec:0,custom:0,iit:1,carry:2}[a.kind]-{rec:0,custom:0,iit:1,carry:2}[b.kind]) || b.pri-a.pri));
+  days.forEach(d=>d.tasks.sort((a,b)=>({rec:0,custom:0,test:0,iit:1,carry:2}[a.kind]-{rec:0,custom:0,test:0,iit:1,carry:2}[b.kind]) || b.pri-a.pri));
   return days;
 }
 function isDone(dayDate,key){ return !!(S.checks[dayDate]&&S.checks[dayDate][key]); }
@@ -251,6 +265,16 @@ function runSelfTest(){
     res.push([placed?"✓":"✗","backlog: overdue probe auto-placed into a free slot"]);
   }catch(e){ res.push(["✗","backlog threw: "+e.message]); }
   try{
+    const th=dstr(addD(monday(0),3));
+    S.tests.push({id:"__tt__",course:"RDBMS",type:"proctored",date:th});
+    const dd=buildWeek(0).find(d=>d.date===th);
+    const hasExam=dd.tasks.some(t=>t.key==="test:__tt__:exam"&&t.min===120);
+    const pd=buildWeek(0).find(d=>d.date===dstr(addD(parseD(th),-1)));
+    const nPrep=pd.tasks.filter(t=>t.key.indexOf("test:__tt__:prep")===0).reduce((a,t)=>a+t.min,0);
+    S.tests=S.tests.filter(t=>t.id!=="__tt__");
+    res.push([(hasExam&&nPrep===150)?"✓":"✗",`tests: proctored exam (120m) + prep (90+60=${nPrep}m) auto-placed on fixed dates`]);
+  }catch(e){ res.push(["✗","tests threw: "+e.message]); }
+  try{
     const n1=S.backlog.length; autoRelocate(); const n2=S.backlog.length; autoRelocate(); const n3=S.backlog.length;
     res.push([n2===n3?"✓":"✗",`relocate idempotent: backlog ${n1}→${n2}→${n3} (no dupes on re-run)`]);
   }catch(e){ res.push(["✗","relocate threw: "+e.message]); }
@@ -260,7 +284,7 @@ function runSelfTest(){
 
 /* ---------- render ---------- */
 const $=id=>document.getElementById(id);
-function renderAll(){ renderToday(); renderWeek(); renderModules(); renderGoals(); renderSettings(); }
+function renderAll(){ renderToday(); renderWeek(); renderModules(); renderTests(); renderGoals(); renderSettings(); }
 function catBadge(c){ return `<span class="badge" style="border-color:${CATS[c]||"#555"};color:${CATS[c]||"#ccc"}">${c}</span>`; }
 
 function renderToday(){
@@ -357,8 +381,16 @@ function renderModules(){
   $("moduleList").querySelectorAll("[data-delmod]").forEach(b=>b.onclick=()=>{ S.modules=S.modules.filter(m=>String(m.id)!==b.dataset.delmod); save(); renderAll(); });
 }
 
-function renderGoals(){
-  const card=(t,arr,c)=>`<div class="card"><h3>${t}</h3><ul class="small" style="padding-left:18px;margin:0">${arr.map(g=>`<li style="margin-bottom:6px">${g}</li>`).join("")}</ul><p class="muted small">${c}</p></div>`;
+function renderTests(){
+  if(!$("testList")) return;
+  const list=[...(S.tests||[])].sort((a,b)=>a.date<b.date?-1:1);
+  $("testList").innerHTML=list.length? list.map(t=>{
+    const p=t.type==="proctored"?"120m exam + 90m + 60m prep":"60m exam + 45m prep";
+    return `<div class="mod"><b>${t.date}</b> · ${t.type==="proctored"?"📝 Proctored":"📝 Non-proctored"} · <b>${t.course}</b> <span class="muted">(${p})</span> <button class="btn danger" data-deltest="${t.id}">✕</button></div>`;
+  }).join("") : `<p class="muted small">No tests scheduled. Add your alternating IITG series below — prep blocks appear automatically on fixed dates.</p>`;
+  $("testList").querySelectorAll("[data-deltest]").forEach(b=>b.onclick=()=>{ S.tests=S.tests.filter(t=>String(t.id)!==b.dataset.deltest); save(); renderAll(); });
+}
+function renderGoals(){  const card=(t,arr,c)=>`<div class="card"><h3>${t}</h3><ul class="small" style="padding-left:18px;margin:0">${arr.map(g=>`<li style="margin-bottom:6px">${g}</li>`).join("")}</ul><p class="muted small">${c}</p></div>`;
   $("goalsGrid").innerHTML =
     card("⚡ Short-term (this week)",GOALS.short,"Checked off in Today / Week tabs.")+
     card("🧱 Mid-term (this semester)",GOALS.mid,"NeetCode 150 · GATE Algo+DBMS · IIT trimester · OWASP PR · Sai grades.")+
@@ -432,6 +464,19 @@ $("qaAdd").onclick=()=>{
   S.custom.push({ id:S.seq++, title:t, date:$("qaDate").value||todayStr(), min:+$("qaMin").value||60, cat:"SAI", pri:4 });
   $("qaTitle").value=""; save(); renderAll();
 };
+$("addOneTest").onclick=()=>{
+  const d=$("tStart").value||todayStr();
+  S.tests.push({ id:S.seq++, course:$("tCourse").value, type:$("tFirst").value, date:d });
+  save(); renderAll();
+};
+$("addAltTests").onclick=()=>{
+  const course=$("tCourse").value, start=$("tStart").value||todayStr();
+  let type=$("tFirst").value;
+  const n=Math.max(1,Math.min(16,+$("tWeeks").value||8));
+  for(let i=0;i<n;i++){ S.tests.push({ id:S.seq++, course, type, date:dstr(addD(parseD(start),i*7)) }); type=(type==="proctored")?"nonproctored":"proctored"; }
+  save(); renderAll();
+  alert(`${n} alternating tests added starting ${start} — prep blocks placed on fixed dates.`);
+};
 $("saveCap").onclick=()=>{ document.querySelectorAll("[data-cap]").forEach(i=>S.cap[i.dataset.cap]=+i.value||0); save(); renderAll(); alert("Capacity saved — schedule rebuilt."); };
 $("resetAll").onclick=()=>{ if(confirm("Wipe all StudyOS data?")){ localStorage.removeItem(LSKEY); S=defState(); save(); renderAll(); } };
 $("selfTest").onclick=runSelfTest;
@@ -439,6 +484,7 @@ if($("speedSel")) $("speedSel").onchange=e=>{ S.speed=parseFloat(e.target.value)
 $("ver").textContent="v1.2 · "+todayStr();
 (function init(){
   const q=$("qaDate"); if(q) q.value=todayStr();
+  if($("tStart")&&!$("tStart").value){ const n=new Date(); $("tStart").value=dstr(addD(n,(7-n.getDay())%7||7)); } // default: next Sunday
   if(!S.installed){ S.installed=todayStr(); save(); } // anchor: only relocate days tracked after install
   seedWeek1(); // one-time Week-1 module seed
   const moved=autoRelocate(); // intelligent relocation runs on every start

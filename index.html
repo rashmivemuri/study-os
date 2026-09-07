@@ -83,6 +83,19 @@
 
   <!-- IIT -->
   <section id="tab-iit" class="tabpage">
+    <div class="card">
+      <h2>Tests &amp; assessments <span class="muted small">IITG: proctored ⇄ non-proctored, alternating weeks</span></h2>
+      <p class="muted small">Proctored → <b>120m</b> exam + 90m revision (2 days before) + 60m mock (day before). Non-proctored → <b>60m</b> + 45m review (day before). Blocks are date-fixed; IIT videos squeeze around them and auto-carry, so other subjects are never displaced.</p>
+      <div class="row wrap">
+        <select id="tCourse"><option>All courses</option><option>Java</option><option>Statistics</option><option>RDBMS</option><option>Optimization</option></select>
+        <label class="small muted">First week <select id="tFirst"><option value="nonproctored">Non-proctored</option><option value="proctored">Proctored</option></select></label>
+        <label class="small muted">Start date <input id="tStart" type="date"></label>
+        <label class="small muted">Weeks <input id="tWeeks" type="number" min="1" max="16" value="8" style="width:70px"></label>
+        <button id="addAltTests" class="btn primary">Add alternating series</button>
+        <button id="addOneTest" class="btn">Add single test</button>
+      </div>
+      <div id="testList" style="margin-top:10px"></div>
+    </div>
     <div class="grid2">
       <div class="card">
         <h2>Add week's module</h2>
@@ -143,6 +156,7 @@
       <h2>How the smart scheduler works</h2>
       <ol class="small">
         <li>Fixed recurring load (NeetCode daily, GATE 4+3, Sai 60m, CF 3×+contest, OWASP 3×, revision) is placed first.</li>
+        <li>Tests (exam + type-based prep) are date-fixed right after recurring — IIT videos absorb the squeeze and auto-carry, so core subjects are never displaced.</li>
         <li>Remaining IIT video minutes are split into ≤50-min chunks and poured into days with the most free capacity.</li>
         <li>Backlog (missed tasks) is fitted next, highest overdue-days first, into any leftover free slots — never piled onto one day.</li>
         <li>Overload days turn red and the tip box tells you exactly what to move.</li>
