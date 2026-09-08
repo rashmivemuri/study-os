@@ -87,7 +87,11 @@
   <!-- IIT -->
   <section id="tab-iit" class="tabpage">
     <div class="card">
-      <h2>Tests &amp; assessments <span class="muted small">IITG: proctored ⇄ non-proctored, alternating weeks</span></h2>
+      <h2>Tests &amp; assessments</h2>
+      <div class="row wrap" style="margin-bottom:10px">
+        <label class="small muted">System <select id="tSys"><option value="iitg">IITG (proctored ⇄ non-proctored)</option><option value="sai">SaiU class test</option></select></label>
+      </div>
+      <div id="iitgForm">
       <p class="muted small">Proctored → <b>120m</b> exam + 90m revision (2 days before) + 60m mock (day before). Non-proctored → <b>60m</b> + 45m review (day before). Blocks are date-fixed; IIT videos squeeze around them and auto-carry, so other subjects are never displaced.</p>
       <div class="row wrap">
         <select id="tCourse"><option>All courses</option><option>Java</option><option>Statistics</option><option>RDBMS</option><option>Optimization</option></select>
@@ -97,7 +101,52 @@
         <button id="addAltTests" class="btn primary">Add alternating series</button>
         <button id="addOneTest" class="btn">Add single test</button>
       </div>
+      </div>
+      <div id="saiForm" style="display:none">
+      <p class="muted small">Tell me the test <b>and</b> your prep plan — e.g. <i>75 PYQs</i> or <i>3h of video material</i> — and the time is auto-spread across the days before it in ≤60m sessions.</p>
+      <div class="row wrap">
+        <select id="sCourse"><option>DAA</option><option>Found. Data Engg</option><option>Web Tech</option><option>Emerging Tools</option><option>Intel. Embedded Sys</option><option>Calculus</option><option>Other</option></select>
+        <input id="sTitle" placeholder="Test topic (e.g. DP + Greedy)" style="flex:1;min-width:160px">
+        <label class="small muted">Date <input id="sDate" type="date"></label>
+      </div>
+      <div class="row wrap" style="margin-top:8px">
+        <label class="small muted">I will solve <select id="sMode"><option value="q">PYQs / questions</option><option value="h">hours of material</option></select></label>
+        <input id="sQty" type="number" min="1" value="75" style="width:90px" title="number of questions or hours">
+        <label class="small muted">min per Q <input id="sPerQ" type="number" min="1" value="4" style="width:65px"></label>
+        <button id="sAdd" class="btn primary">Add SaiU test + spread prep</button>
+      </div>
+      <div id="sCalc" class="small" style="margin-top:6px;color:var(--teal)"></div>
+      </div>
+      <div class="row wrap" style="margin-top:12px;border-top:1px solid var(--line);padding-top:12px">
+        <span class="small"><b>⚡ Crunch mode</b> <span class="muted">(every test, any subject)</span>: when a test is within
+        <input id="cDays" type="number" min="0" max="7" value="3" style="width:62px"> days, pause
+        <label><input type="checkbox" data-pz="sai"> Sai</label>
+        <label><input type="checkbox" data-pz="cf"> CF</label>
+        <label><input type="checkbox" data-pz="oss"> OWASP</label>
+        <label><input type="checkbox" data-pz="algo"> GATE Algo</label>
+        <label><input type="checkbox" data-pz="dbms"> GATE DBMS</label>
+        <label><input type="checkbox" data-pz="nc"> NeetCode</label>
+        <label><input type="checkbox" data-pz="iit"> IIT videos</label><br>
+        <span class="muted">Paused subjects vanish pre-test to fund prep — then return as payback backlog after the test. Toggle per test with its ⚡ button.</span></span>
+      </div>
       <div id="testList" style="margin-top:10px"></div>
+    </div>
+    <div class="card">
+      <h2>Book reading plans <span class="muted small">pages-per-week pacing</span></h2>
+      <p class="muted small">Set chapters + a deadline — the app tells you <b>pages/week</b> and spreads daily sessions. Log pages read per chapter; pace and sessions shrink automatically. Page counts are estimates: fix them against your copy.</p>
+      <div class="row wrap">
+        <label class="small muted">Reading speed <input id="bookPph" type="number" min="2" max="30" value="6" style="width:65px"> pages/hour</label>
+      </div>
+      <div id="bookList" style="margin-top:10px"></div>
+      <details style="margin-top:8px">
+        <summary class="muted small">Add another book (tap to expand)</summary>
+        <div class="row wrap" style="margin-top:8px">
+          <input id="bTitle" placeholder="Book title (e.g. CLRS — Graphs)" style="flex:2;min-width:160px">
+          <label class="small muted">Deadline <input id="bDeadline" type="date" value="2026-12-20"></label>
+          <button id="bAdd" class="btn sm primary">Add book</button>
+        </div>
+        <textarea id="bChapters" rows="4" placeholder="One chapter per line — Name: pages&#10;Dynamic programming (Ch 15): 47&#10;Greedy (Ch 16): 43"></textarea>
+      </details>
     </div>
     <div class="grid2">
       <div class="card">

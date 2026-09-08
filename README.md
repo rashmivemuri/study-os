@@ -5,7 +5,7 @@ Option A (easiest): open File Explorer → `C:\Users\Administrator\.gemini\study
 Option B: in that folder run `python -m http.server 8000`, then open `http://localhost:8000`.
 
 ## How to check it's working
-1. **Settings → Run self-test** — expect 7 ✓ lines (parser, schedule, backlog, tests, relocate, catch-up, college).
+1. **Settings → Run self-test** — expect 11 ✓ lines (parser, schedule, backlog, IITG tests, SaiU tests, relocate, catch-up, college, spread, books, crunch).
 2. **IIT Modules → Preview parse** with the example text — expect "3 videos · total ~78 min".
 3. **Today**: tick a box → progress bar moves → reload the page → tick persists.
 4. **Relocation proof**: leave a task unticked → next day open the app → orange banner "Auto-relocated N unfinished task(s)" + entry in the Relocation log + `↩` item in a future day (Week tab).
@@ -25,6 +25,9 @@ Local-first planner. Double-click `index.html` (or serve with `python -m http.se
 - IIT videos auto-carry (undone videos reschedule every rebuild).
 - Lagging (150m+ backlog or 3d overdue) → one-click **catch-up plan** lightens CF/OWASP until backlog < 60m, then auto-exits.
 - **College hours** (seeded from the SaiU sheet: Sec 3 + ETA Sec 2) are blocked and never scheduled over; edit them in Settings.
+- **SaiU tests**: give the date + your prep plan (N PYQs or H hours) — time auto-spreads over prior days in ≤60m sessions.
+- **Book plans** (CLRS): chapters + deadline → pages/week pace + daily sessions; log pages read to shrink them.
+- **Crunch mode** (universal): within N days of any test, chosen subjects pause to fund prep; paused work returns as payback backlog after the test (per-test ⚡ toggle to exempt).
 - Completing a carryover item removes it from backlog.
 
 ## Troubleshooting

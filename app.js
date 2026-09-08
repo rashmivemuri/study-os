@@ -44,7 +44,7 @@ const GOALS = {
 const SCRAPER = `// Paste in Coursera page console (F12), Enter → durations copied.\n(() => {\n  const t = document.body.innerText;\n  const re = /(?:(\\d+)\\s*h[^\\d]{0,3})?(\\d{1,3})\\s*[:m]\\s*(\\d{1,2})?\\s*(?:min|m)?/gi;\n  const lines = [...document.querySelectorAll('a,span,div')]\n    .map(e => e.innerText.trim()).filter(s => s && s.length < 120);\n  const out = [];\n  document.querySelectorAll('*').forEach(() => {});\n  // fallback: grab every mm:ss-looking string with its row label\n  const rows = [...document.querySelectorAll('[data-testid],li,a')].map(e=>e.innerText.replace(/\\s+/g,' ').trim()).filter(Boolean);\n  const pat = /(.{3,80}?)\\s+(\\d{1,2}:\\d{2}(?::\\d{2})?|\\d+\\s*min)/;\n  rows.forEach(r => { const m = r.match(pat); if (m) out.push(m[1].slice(0,60) + ' — ' + m[2]); });\n  const uniq = [...new Set(out)].join('\\n') || t.match(/\\d{1,2}:\\d{2}(:\\d{2})?/g)?.join('\\n') || 'No durations found — copy manually';\n  navigator.clipboard.writeText(uniq).then(()=>alert('Copied '+uniq.split('\\n').length+' lines. Paste into StudyOS → IIT Modules.'));\n})();`;
 
 /* ---------- store ---------- */
-function defState(){ return { checks:{}, backlog:[], modules:[], custom:[], tests:[], college:{}, collegeSeeded:false, log:[], seeded:false, speed:1.5, catchup:false, cap:{Mon:300,Tue:300,Wed:300,Thu:280,Fri:300,Sat:420,Sun:420}, weekOffset:0, seq:1 }; }
+function defState(){ return { checks:{}, backlog:[], modules:[], custom:[], tests:[], crunch:{days:3,pause:["sai","cf","oss"]}, books:[], bookSeeded:false, bookPph:6, college:{}, collegeSeeded:false, log:[], seeded:false, speed:1.5, catchup:false, cap:{Mon:300,Tue:300,Wed:300,Thu:280,Fri:300,Sat:420,Sun:420}, weekOffset:0, seq:1 }; }
 let S;
 try { S = JSON.parse(localStorage.getItem(LSKEY)) || defState(); } catch { S = defState(); }
 S = Object.assign(defState(), S);
@@ -116,10 +116,18 @@ function buildWeek(offset){
   const days=dates.map(d=>({ date:dstr(d), wd:wd(d), cap:S.cap[wd(d)]||300, college:collegeFor(wd(d)), tasks:[] }));
   const CUT=S.catchup?{oss:30,cf:30,cfcon:60,saiw:45}:{}; // catch-up mode lightens flexible load
   const cutMin=t=>CUT[t.id]||t.min;
-  // 1) recurring + custom one-offs
+  // 0) crunch map: dates within N days before any test (universal, any subject)
+  const crunchDays={};
+  const crunchPause=(S.crunch&&S.crunch.pause)||[];
+  if(S.crunch&&+S.crunch.days>0) (S.tests||[]).forEach(ts=>{
+    if(ts.crunchOff||!ts.date) return;
+    for(let k=1;k<=+S.crunch.days;k++) crunchDays[dstr(addD(parseD(ts.date),-k))]=ts.course;
+  });
+  // 1) recurring + custom one-offs (crunch-paused subjects skipped to fund test prep)
   days.forEach((day,di)=>{
     TEMPLATES.forEach(t=>{
       if(!t.days.includes(day.wd)) return;
+      if(crunchDays[day.date]&&crunchPause.includes(t.id)) return; // paused for crunch
       let title=t.title, extra="";
       if(t.rotating) extra=" · "+t.rotating[di % t.rotating.length];
       day.tasks.push({ key:`${day.date}::${t.id}`, title:title+extra, cat:t.cat, min:cutMin(t), pri:t.pri, kind:"rec", fixed:true });
@@ -128,10 +136,28 @@ function buildWeek(offset){
       day.tasks.push({ key:`custom:${c.id}`, title:c.title, cat:c.cat||"SAI", min:c.min, pri:c.pri||3, kind:"custom", fixed:true });
     });
   });
-  // 1b) tests: exam-day blocks + type-based prep, date-fixed right after recurring
+  // 1b) tests: exam-day blocks + prep, date-fixed right after recurring
   // so core subjects are never displaced — IIT videos absorb the squeeze and auto-carry.
   const byDate={}; days.forEach(d=>byDate[d.date]=d);
+  const saiPrepMin=ts=>ts.prepMode==="h"?Math.round((+ts.qty||0)*60):Math.round((+ts.qty||0)*(+ts.perQ||4));
+  const saiPrepLabel=ts=>ts.prepMode==="h"?`${ts.qty}h material (~${saiPrepMin(ts)}m)`:`${ts.qty} PYQs @${ts.perQ}m (~${saiPrepMin(ts)}m)`;
   (S.tests||[]).forEach(ts=>{
+    if(ts.sys==="sai"){
+      if(byDate[ts.date]) byDate[ts.date].tasks.push({ key:`sai:${ts.id}:exam`, title:`📝 SaiU test: ${ts.course}${ts.title?" — "+ts.title:""}`, cat:"SAI", min:60, pri:6, kind:"test", fixed:true });
+      let rem=saiPrepMin(ts), back=1, i=0;
+      while(rem>0&&back<=5){ // walk back up to 5 days, ≤60m sessions
+        const dd=dstr(addD(parseD(ts.date),-back));
+        if(byDate[dd]){ const sess=Math.min(60,rem); byDate[dd].tasks.push({ key:`sai:${ts.id}:prep${i}`, title:`📝 SaiU prep (${ts.course}): ${saiPrepLabel(ts)}`, cat:"SAI", min:sess, pri:6, kind:"test", fixed:true }); rem-=sess; i++; }
+        back++;
+      }
+      while(rem>0){ // test near week edge: remainder goes to roomiest PRE-test day (never after the exam)
+        const before=days.filter(d=>d.date<ts.date);
+        const pool=before.length?before:(byDate[ts.date]?[byDate[ts.date]]:days);
+        const target=pool.slice().sort((a,b)=>(b.cap-b.tasks.reduce((x,y)=>x+y.min,0))-(a.cap-a.tasks.reduce((x,y)=>x+y.min,0)))[0];
+        const sess=Math.min(60,rem); target.tasks.push({ key:`sai:${ts.id}:prep${i}`, title:`📝 SaiU prep (${ts.course}): ${saiPrepLabel(ts)}`, cat:"SAI", min:sess, pri:6, kind:"test", fixed:true }); rem-=sess; i++;
+      }
+      return;
+    }
     const proctored=ts.type==="proctored";
     if(byDate[ts.date]) byDate[ts.date].tasks.push({ key:`test:${ts.id}:exam`, title:`📝 ${proctored?"Proctored":"Non-proctored"} test: ${ts.course}`, cat:"IIT", min:proctored?120:60, pri:6, kind:"test", fixed:true });
     const preps = proctored
@@ -158,7 +184,7 @@ function buildWeek(offset){
     const tbMin=(mod.textbook ?? 30);
     if(tbMin>0){
       const key=mod.course+' W'+mod.week;
-      (byCourse[key]=byCourse[key]||[]).push(...splitChunk(`📖 Textbook: ${mod.course} W${mod.week}`, tbMin, 35).map(ch=>({mod,v:{label:'📖 textbook'},ch,tb:true})));
+      (byCourse[key]=byCourse[key]||[]).push(...    splitChunk(`📖 Textbook: ${mod.course} W${mod.week}`, tbMin, 35).map(ch=>({mod,v:{label:'📖 textbook'},ch,tb:true})));
     }
   });
   const courses=Object.keys(byCourse);
@@ -169,13 +195,25 @@ function buildWeek(offset){
     for(const c of courses){
       const q=byCourse[c]; if(!q.length) continue;
       const item=q.shift(); more=true;
-      // least-loaded day that still has room, tightest fit first (cap-safe); overflow only if week is overfull
-      const roomy=days.filter(d=>free(d)>=item.ch.minutes);
+      // least-loaded day that still has room, tightest fit first (cap-safe); crunch-paused IIT defers (auto-carry)
+      const roomy=days.filter(d=>free(d)>=item.ch.minutes&&!(crunchDays[d.date]&&crunchPause.includes("iit")));
       const target=(roomy.length?roomy.slice().sort((a,b)=>iitLoad(a)-iitLoad(b)||free(a)-free(b))
                                :days.slice().sort((a,b)=>free(b)-free(a)))[0];
       target.tasks.push({ key:`iit:${item.mod.id}:${item.v.label}:${item.ch.label}`, title:"▶ "+item.ch.label, cat:"IIT", min:item.ch.minutes, pri:5, kind:"iit", tb:!!item.tb, modId:item.mod.id, vlabel:item.v.label, chunk:item.ch.label });
     }
   }
+  // 2b) book reading plans (CLRS etc.): remaining pages → sessions at bookPph, same even spread
+  const pph=+S.bookPph||6;
+  (S.books||[]).forEach(b=>b.chapters.forEach((c,ci)=>{
+    const left=Math.max(0,(+c.pages||0)-(+c.done||0));
+    if(left<=0) return;
+    splitChunk(`📕 ${b.title}: ${c.name} (${left}p left)`, Math.max(10,Math.ceil(left/pph*60)), 30).forEach(ch=>{
+      const roomy=days.filter(d=>free(d)>=ch.minutes&&!(crunchDays[d.date]&&crunchPause.includes("sai")));
+      const target=(roomy.length?roomy.slice().sort((a,x)=>bookLoadOf(a)-bookLoadOf(x)):days.slice().sort((a,x)=>free(x)-free(a)))[0];
+      target.tasks.push({ key:`book:${b.id}:${ci}:${ch.label}`, title:"▶ "+ch.label, cat:"SAI", min:ch.minutes, pri:4, kind:"book", fixed:false });
+    })
+  }));
+  function bookLoadOf(d){ return d.tasks.filter(t=>t.kind==="book").reduce((a,t)=>a+t.min,0); }
   // 3) backlog → leftover free slots, most-overdue first (cap 2 per day to avoid piling)
   const sorted=[...S.backlog].sort((a,b)=>(b.overdue||0)-(a.overdue||0) || b.pri-a.pri);
   sorted.forEach(b=>{
@@ -272,6 +310,19 @@ function autoRelocate(){
   }
   if(S.catchup && S.backlog.reduce((a,b)=>a+(b.min||0),0)<60){ S.catchup=false; addLog('Catch-up complete — full timetable restored'); save(); }
   else if(moved) save();
+  // crunch payback: tests whose window has passed return paused work as backlog (compensate after)
+  (S.tests||[]).forEach(ts=>{
+    if(ts.crunchPaid||ts.crunchOff||!ts.date||!(ts.date<t)||!S.crunch||!(+S.crunch.days>0)) return;
+    (S.crunch.pause||[]).forEach(pid=>{
+      const tmp=TEMPLATES.find(x=>x.id===pid); if(!tmp) return; // 'iit' auto-carries, needs no entry
+      for(let k=1;k<=+S.crunch.days;k++){
+        const dd=dstr(addD(parseD(ts.date),-k));
+        if(!tmp.days.includes(wd(parseD(dd)))) continue;
+        S.backlog.push({ id:S.seq++, title:`Payback (${ts.course} crunch): ${tmp.title}`, cat:tmp.cat, min:tmp.min, pri:3, fromDate:ts.date, overdue:1 });
+      }
+    });
+    ts.crunchPaid=true; addLog(`Crunch payback: paused work for the ${ts.course} test is back in your queue`); save();
+  });
   return moved;
 }
 /* Self-test: parser + schedule + backlog placement + idempotent relocate. */
@@ -321,6 +372,34 @@ function runSelfTest(){
     res.push([(used===7&&spread<=120)?"✓":"✗",`IIT spread: all 7 days used (${perDay.join("/")}), max-min gap ${spread}m`]);
   }catch(e){ res.push(["✗","spread threw: "+e.message]); }
   try{
+    const th2=dstr(addD(monday(0),3));
+    S.tests.push({id:"__ts__",sys:"sai",course:"DAA",title:"DP",date:th2,prepMode:"q",qty:75,perQ:4});
+    const w2=buildWeek(0);
+    const examOk=w2.find(d=>d.date===th2).tasks.some(t=>t.key==="sai:__ts__:exam"&&t.min===60);
+    const prepSum=w2.flatMap(d=>d.tasks).filter(t=>t.key.indexOf("sai:__ts__:prep")===0).reduce((a,t)=>a+t.min,0);
+    S.tests=S.tests.filter(t=>t.id!=="__ts__");
+    res.push([(examOk&&prepSum===300)?"✓":"✗",`sai test: 60m exam + 75 PYQs → ${prepSum}m prep spread (expect 300)`]);
+  }catch(e){ res.push(["✗","sai test threw: "+e.message]); }
+  try{
+    S.books.push({id:"__bk__",title:"T",deadline:"2026-12-20",chapters:[{name:"C1",pages:12,done:0},{name:"C2",pages:6,done:0}]});
+    const bSum=buildWeek(0).flatMap(d=>d.tasks).filter(t=>t.key.indexOf("book:__bk__")===0).reduce((a,t)=>a+t.min,0);
+    S.books=S.books.filter(b=>b.id!=="__bk__");
+    res.push([bSum===180?"✓":"✗",`book plan: 18p @6pph → ${bSum}m sessions (expect 180)`]);
+  }catch(e){ res.push(["✗","book threw: "+e.message]); }
+  try{
+    const snapB=S.backlog;
+    S.tests.push({id:"__cz__",sys:"sai",course:"DAA",title:"",date:dstr(addD(parseD(todayStr()),2)),prepMode:"h",qty:1,perQ:4});
+    S.crunch={days:2,pause:["sai"]};
+    const paused=!buildWeek(weekOf(todayStr())).find(d=>d.date===todayStr()).tasks.some(t=>t.key.slice(-5)==="::sai");
+    const nB=S.backlog.length;
+    S.tests.find(t=>t.id==="__cz__").date=dstr(addD(parseD(todayStr()),-1)); // move test to past → payback
+    autoRelocate();
+    const paid=S.backlog.length>nB;
+    S.tests=S.tests.filter(t=>t.id!=="__cz__"); S.backlog=snapB;
+    S.crunch={days:3,pause:["sai","cf","oss"]};
+    res.push([(paused&&paid)?"✓":"✗",`crunch: Sai paused pre-test (${paused}), payback returned after (${paid})`]);
+  }catch(e){ try{S.crunch={days:3,pause:["sai","cf","oss"]};}catch(_){} res.push(["✗","crunch threw: "+e.message]); }
+  try{
     const nDays=DAYS.filter(d=>collegeFor(d).length).length, thu=collegeMin("Thu");
     res.push([(nDays>=5&&thu>200)?"✓":"✗",`college blocks: ${nDays} days guarded (Thu ${thu}m), never scheduled over`]);
   }catch(e){ res.push(["✗","college threw: "+e.message]); }
@@ -330,7 +409,15 @@ function runSelfTest(){
 
 /* ---------- render ---------- */
 const $=id=>document.getElementById(id);
-function renderAll(){ renderToday(); renderWeek(); renderModules(); renderTests(); renderGoals(); renderSettings(); renderDiag(); }
+function renderAll(){ renderToday(); renderWeek(); renderModules(); renderTests(); renderBooks(); renderGoals(); renderSettings(); renderDiag(); }
+$("bAdd").onclick=()=>{
+  const ti=$("bTitle").value.trim();
+  const chs=parseDurations($("bChapters").value).filter(x=>x.minutes>0).map(x=>({name:x.label.slice(0,80),pages:x.minutes,done:0}));
+  if(!ti||!chs.length){ alert("Give the book a title and at least one 'Chapter: pages' line."); return; }
+  S.books.push({ id:S.seq++, title:ti, deadline:$("bDeadline").value||"2026-12-20", chapters:chs });
+  $("bTitle").value=""; $("bChapters").value=""; save(); renderAll();
+};
+if($("bookPph")){ $("bookPph").value=S.bookPph||6; $("bookPph").onchange=e=>{ S.bookPph=Math.max(2,+e.target.value||6); save(); renderAll(); }; }
 function renderDiag(){ if(!$("diagLine")) return;
   $("diagLine").textContent=`${S.modules.length} modules · ${iitVideosLeft().reduce((a,x)=>a+x.v.minutes,0)}m IIT left · ${S.backlog.length} backlog · ${(S.tests||[]).length} tests · ${S.catchup?"catch-up ON":"normal"}`;
 }
@@ -466,10 +553,56 @@ function renderTests(){
   if(!$("testList")) return;
   const list=[...(S.tests||[])].sort((a,b)=>a.date<b.date?-1:1);
   $("testList").innerHTML=list.length? list.map(t=>{
-    const p=t.type==="proctored"?"120m exam + 90m + 60m prep":"60m exam + 45m prep";
-    return `<div class="mod"><b>${t.date}</b> · ${t.type==="proctored"?"📝 Proctored":"📝 Non-proctored"} · <b>${t.course}</b> <span class="muted">(${p})</span> <button class="btn danger" data-deltest="${t.id}">✕</button></div>`;
-  }).join("") : `<p class="muted small">No tests scheduled. Add your alternating IITG series below — prep blocks appear automatically on fixed dates.</p>`;
+    const info=t.sys==="sai"
+      ? `📝 SaiU · <b>${t.course}</b>${t.title?" — "+t.title:""} <span class="muted">(${t.prepMode==="h"?t.qty+"h material":t.qty+" PYQs"} → ${t.prepMode==="h"?Math.round(t.qty*60):Math.round(t.qty*(t.perQ||4))}m prep)</span>`
+      : `${t.type==="proctored"?"📝 Proctored":"📝 Non-proctored"} · <b>${t.course}</b>`;
+    const p=t.sys==="sai"?"60m exam + auto-spread prep":(t.type==="proctored"?"120m exam + 90m + 60m prep":"60m exam + 45m prep");
+    return `<div class="mod"><b>${t.date}</b> · ${info} <span class="muted">(${p})</span> <button class="btn sm" data-crunch="${t.id}" title="toggle crunch for this test">${t.crunchOff?"⚡ crunch off":"⚡ crunch on"}</button> <button class="btn danger sm" data-deltest="${t.id}">✕</button></div>`;
+  }).join("") : `<p class="muted small">No tests scheduled. Add your alternating IITG series or a SaiU class test below — prep blocks appear automatically on fixed dates.</p>`;
   $("testList").querySelectorAll("[data-deltest]").forEach(b=>b.onclick=()=>{ S.tests=S.tests.filter(t=>String(t.id)!==b.dataset.deltest); save(); renderAll(); });
+  $("testList").querySelectorAll("[data-crunch]").forEach(b=>b.onclick=()=>{ const t=(S.tests||[]).find(x=>String(x.id)===b.dataset.crunch); if(t){ t.crunchOff=!t.crunchOff; save(); renderAll(); } });
+  // crunch defaults live-sync
+  if($("cDays")) $("cDays").value=S.crunch.days;
+  document.querySelectorAll("[data-pz]").forEach(cb=>{ cb.checked=(S.crunch.pause||[]).includes(cb.dataset.pz); });
+}
+/* Book reading plans. Chapters carry page counts (verify against your copy —
+   seeds are ~3rd-edition estimates); pace = remaining pages ÷ weeks to deadline. */
+function seedBooks(){
+  if(S.bookSeeded) return; S.bookSeeded=true;
+  if(!(S.books||[]).length){
+    const C=(name,pages)=>({name,pages:pages,done:0});
+    S.books.push({ id:S.seq++, title:"CLRS — DAA (in-syllabus)", deadline:"2026-12-20", seed:true, chapters:[
+      C("Foundations & growth (Ch 1–3)",70),C("Divide & conquer (Ch 4)",35),C("Heapsort (Ch 6)",30),
+      C("Quicksort (Ch 7)",30),C("Linear-time sorting (Ch 8)",30),C("Order statistics (Ch 9)",25),
+      C("Hash tables (Ch 11)",28),C("BSTs (Ch 12)",34),C("Red-black trees (Ch 13)",31),
+      C("Dynamic programming (Ch 15)",47),C("Greedy (Ch 16)",43),C("Graphs + BFS/DFS (Ch 22)",35),
+      C("MST (Ch 23)",35),C("Shortest paths (Ch 24–25)",45),C("Max flow (Ch 26)",57),C("NP-completeness (Ch 34)",59)
+    ]});
+    addLog("Seeded CLRS plan (16 chapters, ~634p) — delete off-syllabus chapters to refit pace");
+  }
+  save();
+}
+function bookPace(b){
+  const rem=b.chapters.reduce((a,c)=>a+Math.max(0,(+c.pages||0)-(+c.done||0)),0);
+  const weeks=Math.max(1,Math.ceil((parseD(b.deadline)-parseD(todayStr()))/6048e5));
+  const ppw=Math.ceil(rem/weeks), pph=+S.bookPph||6;
+  return { rem, weeks, ppw, minDay:Math.round(ppw/7/pph*60) };
+}
+function renderBooks(){
+  if(!$("bookList")) return;
+  $("bookList").innerHTML=(S.books||[]).length?(S.books||[]).map(b=>{
+    const p=bookPace(b);
+    return `<div class="mod"><b>📕 ${b.title}</b> — ${b.chapters.length} chapters · ${p.rem}p left · <b>${p.ppw} pages/week</b> to finish by ${b.deadline} (~${p.minDay}m/day at ${S.bookPph||6} pph)
+      <div>${b.chapters.map((c,ci)=>{
+        const left=Math.max(0,c.pages-(c.done||0));
+        return `<label style="display:block"><span style="flex:1">${c.name} — ${c.pages}p <span class="muted">(${left} left)</span></span><input type="number" min="0" max="${c.pages}" value="${c.done||0}" data-bdone="${b.id}:${ci}" style="width:65px" title="pages done"> <a href="#" data-delch="${b.id}:${ci}" title="remove chapter">✕</a></label>`;}).join("")}</div>
+      <div class="row wrap" style="margin-top:6px"><label class="small muted">Deadline <input type="date" value="${b.deadline}" data-bdl="${b.id}"></label>
+      <span style="flex:1"></span><button class="btn danger sm" data-delbook="${b.id}">Delete book</button></div></div>`;
+  }).join("") : `<p class="muted small">No book plans. Add one below — e.g. CLRS with one "Chapter: pages" line each.</p>`;
+  $("bookList").querySelectorAll("[data-bdone]").forEach(i=>i.onchange=()=>{ const [bid,ci]=i.dataset.bdone.split(":"); const b=(S.books||[]).find(x=>String(x.id)===bid); if(b&&b.chapters[+ci]){ b.chapters[+ci].done=Math.max(0,Math.min(b.chapters[+ci].pages,+i.value||0)); save(); renderAll(); } });
+  $("bookList").querySelectorAll("[data-bdl]").forEach(i=>i.onchange=()=>{ const b=(S.books||[]).find(x=>String(x.id)===i.dataset.bdl); if(b){ b.deadline=i.value||b.deadline; save(); renderAll(); } });
+  $("bookList").querySelectorAll("[data-delch]").forEach(a=>a.onclick=e=>{ e.preventDefault(); const [bid,ci]=a.dataset.delch.split(":"); const b=(S.books||[]).find(x=>String(x.id)===bid); if(b){ b.chapters.splice(+ci,1); save(); renderAll(); } });
+  $("bookList").querySelectorAll("[data-delbook]").forEach(x=>x.onclick=()=>{ S.books=(S.books||[]).filter(y=>String(y.id)!==x.dataset.delbook); save(); renderAll(); });
 }
 function renderGoals(){  const card=(t,arr,c)=>`<div class="card"><h3>${t}</h3><ul class="small" style="padding-left:18px;margin:0">${arr.map(g=>`<li style="margin-bottom:6px">${g}</li>`).join("")}</ul><p class="muted small">${c}</p></div>`;
   $("goalsGrid").innerHTML =
@@ -580,17 +713,43 @@ $("qaAdd").onclick=()=>{
 };
 $("addOneTest").onclick=()=>{
   const d=$("tStart").value||todayStr();
-  S.tests.push({ id:S.seq++, course:$("tCourse").value, type:$("tFirst").value, date:d });
+  S.tests.push({ id:S.seq++, sys:"iitg", course:$("tCourse").value, type:$("tFirst").value, date:d });
   save(); renderAll();
 };
 $("addAltTests").onclick=()=>{
   const course=$("tCourse").value, start=$("tStart").value||todayStr();
   let type=$("tFirst").value;
   const n=Math.max(1,Math.min(16,+$("tWeeks").value||8));
-  for(let i=0;i<n;i++){ S.tests.push({ id:S.seq++, course, type, date:dstr(addD(parseD(start),i*7)) }); type=(type==="proctored")?"nonproctored":"proctored"; }
+  for(let i=0;i<n;i++){ S.tests.push({ id:S.seq++, sys:"iitg", course, type, date:dstr(addD(parseD(start),i*7)) }); type=(type==="proctored")?"nonproctored":"proctored"; }
   save(); renderAll();
   alert(`${n} alternating tests added starting ${start} — prep blocks placed on fixed dates.`);
 };
+function saiCalc(){ // live "what does my prep cost?" preview
+  if(!$("sCalc")) return;
+  const h=$("sMode").value==="h", q=+$("sQty").value||0, r=+$("sPerQ").value||4;
+  $("sCalc").textContent=q?(h?`≈ ${Math.round(q*60)} min total → auto-split into ≤60m sessions before test day`:`≈ ${Math.round(q*r)} min total (${q} × ${r}m) → auto-split into ≤60m sessions before test day`):"";
+}
+$("sAdd").onclick=()=>{
+  const d=$("sDate").value||todayStr(), q=+$("sQty").value||0;
+  if(!q){ alert("Tell me your prep plan first — how many PYQs, or how many hours of material?"); return; }
+  S.tests.push({ id:S.seq++, sys:"sai", course:$("sCourse").value, title:$("sTitle").value.trim(), date:d, prepMode:$("sMode").value, qty:q, perQ:+$("sPerQ").value||4 });
+  $("sQty").value=""; $("sTitle").value=""; save(); renderAll();
+  alert("SaiU test added — prep time is now spread across the days before it.");
+};
+$("tSys").onchange=()=>{
+  const sai=$("tSys").value==="sai";
+  if($("iitgForm")) $("iitgForm").style.display=sai?"none":"";
+  if($("saiForm")) $("saiForm").style.display=sai?"":"none";
+  saiCalc();
+};
+["sMode","sQty","sPerQ"].forEach(id=>{ const el=$(id); if(el) el.oninput=saiCalc; });
+if($("cDays")) $("cDays").onchange=e=>{ S.crunch.days=Math.max(0,Math.min(7,+e.target.value||0)); save(); renderAll(); };
+document.querySelectorAll("[data-pz]").forEach(cb=>cb.onchange=()=>{
+  const p=S.crunch.pause||(S.crunch.pause=[]), id=cb.dataset.pz;
+  if(cb.checked&&!p.includes(id)) p.push(id);
+  if(!cb.checked) S.crunch.pause=p.filter(x=>x!==id);
+  save(); renderAll();
+});
 $("saveCap").onclick=()=>{ document.querySelectorAll("[data-cap]").forEach(i=>S.cap[i.dataset.cap]=+i.value||0); save(); renderAll(); alert("Capacity saved — schedule rebuilt."); };
 $("resetAll").onclick=()=>{ if(confirm("Wipe all StudyOS data?")){ localStorage.removeItem(LSKEY); S=defState(); save(); renderAll(); } };
 $("selfTest").onclick=runSelfTest;
@@ -606,9 +765,11 @@ $("ver").textContent="v1.4 · "+todayStr();
 (function init(){
   const q=$("qaDate"); if(q) q.value=todayStr();
   if($("tStart")&&!$("tStart").value){ const n=new Date(); $("tStart").value=dstr(addD(n,(7-n.getDay())%7||7)); } // default: next Sunday
+  if($("sDate")&&!$("sDate").value){ const n=new Date(); $("sDate").value=dstr(addD(n,(4-n.getDay()+7)%7||7)); } // default: next Thursday
   if(!S.installed){ S.installed=todayStr(); save(); } // anchor: only relocate days tracked after install
   seedWeek1(); // one-time Week-1 module seed
   seedCollege(); // one-time college timetable seed
+  seedBooks(); // one-time CLRS plan seed
   const moved=autoRelocate(); // intelligent relocation runs on every start
   renderAll();
   if(moved>0 && $("autoNotice")) $("autoNotice").innerHTML=`<div class="warn" style="border-color:var(--warn);color:#ffe1a8;background:#241c08">⟳ Auto-relocated <b>${moved}</b> unfinished task(s) from past days into your backlog — already fitted into your next free slots. Details in the Relocation log.</div>`;
