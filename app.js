@@ -44,7 +44,7 @@ const GOALS = {
 const SCRAPER = `// Paste in Coursera page console (F12), Enter → durations copied.\n(() => {\n  const t = document.body.innerText;\n  const re = /(?:(\\d+)\\s*h[^\\d]{0,3})?(\\d{1,3})\\s*[:m]\\s*(\\d{1,2})?\\s*(?:min|m)?/gi;\n  const lines = [...document.querySelectorAll('a,span,div')]\n    .map(e => e.innerText.trim()).filter(s => s && s.length < 120);\n  const out = [];\n  document.querySelectorAll('*').forEach(() => {});\n  // fallback: grab every mm:ss-looking string with its row label\n  const rows = [...document.querySelectorAll('[data-testid],li,a')].map(e=>e.innerText.replace(/\\s+/g,' ').trim()).filter(Boolean);\n  const pat = /(.{3,80}?)\\s+(\\d{1,2}:\\d{2}(?::\\d{2})?|\\d+\\s*min)/;\n  rows.forEach(r => { const m = r.match(pat); if (m) out.push(m[1].slice(0,60) + ' — ' + m[2]); });\n  const uniq = [...new Set(out)].join('\\n') || t.match(/\\d{1,2}:\\d{2}(:\\d{2})?/g)?.join('\\n') || 'No durations found — copy manually';\n  navigator.clipboard.writeText(uniq).then(()=>alert('Copied '+uniq.split('\\n').length+' lines. Paste into StudyOS → IIT Modules.'));\n})();`;
 
 /* ---------- store ---------- */
-function defState(){ return { checks:{}, backlog:[], modules:[], custom:[], tests:[], crunch:{days:3,pause:["sai","cf","oss"]}, books:[], bookSeeded:false, bookPph:6, college:{}, collegeSeeded:false, log:[], seeded:false, speed:1.5, catchup:false, cap:{Mon:300,Tue:300,Wed:300,Thu:280,Fri:300,Sat:420,Sun:420}, weekOffset:0, seq:1 }; }
+function defState(){ return { checks:{}, backlog:[], modules:[], custom:[], tests:[], crunch:{days:3,pause:["sai","cf","oss"]}, books:[], bookSeeded:false, bookPph:6, bookMaxDay:30, college:{}, collegeSeeded:false, log:[], seeded:false, speed:1.5, catchup:false, cap:{Mon:300,Tue:300,Wed:300,Thu:280,Fri:300,Sat:360,Sun:360}, weekOffset:0, seq:1 }; }
 let S;
 try { S = JSON.parse(localStorage.getItem(LSKEY)) || defState(); } catch { S = defState(); }
 S = Object.assign(defState(), S);
@@ -111,6 +111,15 @@ function splitChunk(label, minutes, max=50){
   return arr;
 }
 /* Build schedule for a week offset. Pure function of templates+custom+modules+backlog placement. */
+function iitRate(){ let a=0,b=0; (S.modules||[]).forEach(m=>m.videos.forEach(v=>{ b++; if(v.done)a++; })); return b?a/b:1; }
+/* Daily reading budget: humane base scaled by IIT completion (ticked videos) and
+   college load; 0 while lagging (reading pauses till backlog clears). */
+function readBudget(d){
+  if(behindInfo().behind) return 0;
+  const pace=0.7+0.3*iitRate();
+  const base=Math.min(+S.bookMaxDay||30,30)*pace;
+  return Math.max(15,Math.round(base*Math.max(0.5,1-collegeMin(d.wd)/480)));
+}
 function buildWeek(offset){
   const dates=weekDates(offset);
   const days=dates.map(d=>({ date:dstr(d), wd:wd(d), cap:S.cap[wd(d)]||300, college:collegeFor(wd(d)), tasks:[] }));
@@ -197,29 +206,32 @@ function buildWeek(offset){
       const item=q.shift(); more=true;
       // least-loaded day that still has room, tightest fit first (cap-safe); crunch-paused IIT defers (auto-carry)
       const roomy=days.filter(d=>free(d)>=item.ch.minutes&&!(crunchDays[d.date]&&crunchPause.includes("iit")));
-      const target=(roomy.length?roomy.slice().sort((a,b)=>iitLoad(a)-iitLoad(b)||free(a)-free(b))
-                               :days.slice().sort((a,b)=>free(b)-free(a)))[0];
+      if(!roomy.length) continue; // nothing fits this week → stays undone, auto-carries to next week (never forced red)
+      const target=roomy.slice().sort((a,b)=>iitLoad(a)-iitLoad(b)||free(a)-free(b))[0];
       target.tasks.push({ key:`iit:${item.mod.id}:${item.v.label}:${item.ch.label}`, title:"▶ "+item.ch.label, cat:"IIT", min:item.ch.minutes, pri:5, kind:"iit", tb:!!item.tb, modId:item.mod.id, vlabel:item.v.label, chunk:item.ch.label });
     }
   }
-  // 2b) book reading plans (CLRS etc.): remaining pages → sessions at bookPph, same even spread
+  // 2b) book reading: ≤2 sessions/day inside the adaptive budget; the rest defers — never red
   const pph=+S.bookPph||6;
   (S.books||[]).forEach(b=>b.chapters.forEach((c,ci)=>{
     const left=Math.max(0,(+c.pages||0)-(+c.done||0));
     if(left<=0) return;
-    splitChunk(`📕 ${b.title}: ${c.name} (${left}p left)`, Math.max(10,Math.ceil(left/pph*60)), 30).forEach(ch=>{
-      const roomy=days.filter(d=>free(d)>=ch.minutes&&!(crunchDays[d.date]&&crunchPause.includes("sai")));
-      const target=(roomy.length?roomy.slice().sort((a,x)=>bookLoadOf(a)-bookLoadOf(x)):days.slice().sort((a,x)=>free(x)-free(a)))[0];
-      target.tasks.push({ key:`book:${b.id}:${ci}:${ch.label}`, title:"▶ "+ch.label, cat:"SAI", min:ch.minutes, pri:4, kind:"book", fixed:false });
-    })
+    splitChunk(`📕 ${b.title}: ${c.name}`, Math.max(10,Math.ceil(left/pph*60)), 15).forEach(ch=>{
+      const roomy=days.filter(d=>free(d)>=ch.minutes&&d.tasks.filter(t=>t.kind==="book").length<2&&bookLoadOf(d)+ch.minutes<=readBudget(d)&&!(crunchDays[d.date]&&crunchPause.includes("sai")));
+      if(!roomy.length) return; // deferred to a future week, not dropped
+      const target=roomy.slice().sort((a,x)=>bookLoadOf(a)-bookLoadOf(x))[0];
+      const pp=Math.max(1,Math.round(ch.minutes/60*pph));
+      target.tasks.push({ key:`book:${b.id}:${ci}:${ch.label}`, title:`▶ 📕 ${b.title}: ${c.name} (≈${pp}p · ${ch.minutes}m)`, cat:"SAI", min:ch.minutes, pri:4, kind:"book", fixed:false });
+    });
   }));
   function bookLoadOf(d){ return d.tasks.filter(t=>t.kind==="book").reduce((a,t)=>a+t.min,0); }
-  // 3) backlog → leftover free slots, most-overdue first (cap 2 per day to avoid piling)
+  // 3) backlog → leftover free slots, most-overdue first (cap 2 per day); unplaced stays queued, never forced red
   const sorted=[...S.backlog].sort((a,b)=>(b.overdue||0)-(a.overdue||0) || b.pri-a.pri);
   sorted.forEach(b=>{
     const cands=days.filter(d=>free(d)>=Math.min(b.min,30) && d.tasks.filter(t=>t.kind==="carry").length<2)
       .sort((a,b2)=>free(a)-free(b2)); // tightest fit that still fits
-    const t=(cands[0]||days.slice().sort((a,b2)=>free(b2)-free(a))[0]);
+    if(!cands.length) return; // queued for a future week with room
+    const t=cands[0];
     t.tasks.push({ key:`carry:${b.id}::${t.date}`, title:"↩ "+b.title, cat:b.cat, min:b.min, pri:b.pri, kind:"carry", bid:b.id });
   });
   // order: fixed first by priority, then iit, then carry
@@ -381,10 +393,13 @@ function runSelfTest(){
     res.push([(examOk&&prepSum===300)?"✓":"✗",`sai test: 60m exam + 75 PYQs → ${prepSum}m prep spread (expect 300)`]);
   }catch(e){ res.push(["✗","sai test threw: "+e.message]); }
   try{
-    S.books.push({id:"__bk__",title:"T",deadline:"2026-12-20",chapters:[{name:"C1",pages:12,done:0},{name:"C2",pages:6,done:0}]});
-    const bSum=buildWeek(0).flatMap(d=>d.tasks).filter(t=>t.key.indexOf("book:__bk__")===0).reduce((a,t)=>a+t.min,0);
-    S.books=S.books.filter(b=>b.id!=="__bk__");
-    res.push([bSum===180?"✓":"✗",`book plan: 18p @6pph → ${bSum}m sessions (expect 180)`]);
+    const snapBooks=S.books;
+    S.books=[{id:"__bk__",title:"T",deadline:"2026-12-20",chapters:[{name:"C1",pages:12,done:0},{name:"C2",pages:6,done:0}]}];
+    const w0=buildWeek(0), bs=w0.flatMap(d=>d.tasks).filter(t=>t.kind==="book");
+    const perDayOk=w0.every(d=>d.tasks.filter(t=>t.kind==="book").reduce((a,t)=>a+t.min,0)<=readBudget(d)+0.01);
+    const noOver=w0.every(d=>d.tasks.reduce((a,t)=>a+t.min,0)<=d.cap);
+    S.books=snapBooks;
+    res.push([(bs.length>0&&bs.every(t=>t.min<=15)&&perDayOk&&noOver)?"✓":"✗",`books: ≤15m humane sessions within daily budget, zero overload days`]);
   }catch(e){ res.push(["✗","book threw: "+e.message]); }
   try{
     const snapB=S.backlog;
@@ -399,6 +414,13 @@ function runSelfTest(){
     S.crunch={days:3,pause:["sai","cf","oss"]};
     res.push([(paused&&paid)?"✓":"✗",`crunch: Sai paused pre-test (${paused}), payback returned after (${paid})`]);
   }catch(e){ try{S.crunch={days:3,pause:["sai","cf","oss"]};}catch(_){} res.push(["✗","crunch threw: "+e.message]); }
+  try{
+    const sB=S.backlog, sT=S.tests, sC=S.custom;
+    S.backlog=[]; S.tests=[]; S.custom=[];
+    const over=buildWeek(0).filter(d=>d.tasks.reduce((a,t)=>a+t.min,0)>d.cap).map(d=>d.wd);
+    S.backlog=sB; S.tests=sT; S.custom=sC;
+    res.push([over.length===0?"✓":"✗",`hard caps: ${over.length?over.join(",")+" OVER":"no day exceeds 4–6h"} (flexible work defers, never forces red)`]);
+  }catch(e){ res.push(["✗","caps threw: "+e.message]); }
   try{
     const nDays=DAYS.filter(d=>collegeFor(d).length).length, thu=collegeMin("Thu");
     res.push([(nDays>=5&&thu>200)?"✓":"✗",`college blocks: ${nDays} days guarded (Thu ${thu}m), never scheduled over`]);
@@ -418,6 +440,7 @@ $("bAdd").onclick=()=>{
   $("bTitle").value=""; $("bChapters").value=""; save(); renderAll();
 };
 if($("bookPph")){ $("bookPph").value=S.bookPph||6; $("bookPph").onchange=e=>{ S.bookPph=Math.max(2,+e.target.value||6); save(); renderAll(); }; }
+if($("bookMaxDay")){ $("bookMaxDay").value=S.bookMaxDay||30; $("bookMaxDay").onchange=e=>{ S.bookMaxDay=Math.max(10,+e.target.value||30); save(); renderAll(); }; }
 function renderDiag(){ if(!$("diagLine")) return;
   $("diagLine").textContent=`${S.modules.length} modules · ${iitVideosLeft().reduce((a,x)=>a+x.v.minutes,0)}m IIT left · ${S.backlog.length} backlog · ${(S.tests||[]).length} tests · ${S.catchup?"catch-up ON":"normal"}`;
 }
@@ -470,11 +493,12 @@ function renderToday(){
     if($("catchupBtn")) $("catchupBtn").onclick=()=>{ S.catchup=true; addLog("Catch-up plan applied — CF/OWASP lightened"); save(); renderAll(); };
     if($("exitCatchupBtn")) $("exitCatchupBtn").onclick=()=>{ S.catchup=false; addLog("Catch-up exited manually"); save(); renderAll(); };
   }
-  // backlog
+  // backlog (placed vs queued-for-later)
+  const placedBids=new Set(buildWeek(S.weekOffset).flatMap(d=>d.tasks).filter(x=>x.kind==="carry").map(x=>String(x.bid)));
   $("backlogCount").textContent=S.backlog.length+" open";
   $("backlogList").innerHTML=S.backlog.length? S.backlog.map(b=>
-    `<li class="task"><div><div class="t">↩ ${b.title}</div><div class="meta">${catBadge(b.cat)} ${b.min} min · overdue ${b.overdue||0}d · from ${b.fromDate}</div></div>
-     <span style="margin-left:auto"></span><button class="btn" data-done="${b.id}">Done</button><button class="btn danger" data-del="${b.id}">✕</button></div></li>`).join("")
+    `<li class="task"><div><div class="t">↩ ${b.title}</div><div class="meta">${catBadge(b.cat)} ${b.min} min · overdue ${b.overdue||0}d · from ${b.fromDate} · ${placedBids.has(String(b.id))?'<span style="color:var(--ok)">scheduled this week</span>':'<span style="color:var(--warn)">⏳ queued — no room yet, auto-tried weekly</span>'}</div></div>
+     <span style="margin-left:auto"></span><button class="btn sm" data-done="${b.id}">Done</button><button class="btn danger sm" data-del="${b.id}">✕</button></div></li>`).join("")
     : `<li class="muted small">Backlog clear. Missed tasks will land here automatically.</li>`;
   $("backlogList").querySelectorAll("[data-done]").forEach(b=>b.onclick=()=>{ S.backlog=S.backlog.filter(x=>String(x.id)!==b.dataset.done); save(); renderAll(); });
   $("backlogList").querySelectorAll("[data-del]").forEach(b=>b.onclick=()=>{ S.backlog=S.backlog.filter(x=>String(x.id)!==b.dataset.del); save(); renderAll(); });
@@ -586,13 +610,21 @@ function bookPace(b){
   const rem=b.chapters.reduce((a,c)=>a+Math.max(0,(+c.pages||0)-(+c.done||0)),0);
   const weeks=Math.max(1,Math.ceil((parseD(b.deadline)-parseD(todayStr()))/6048e5));
   const ppw=Math.ceil(rem/weeks), pph=+S.bookPph||6;
-  return { rem, weeks, ppw, minDay:Math.round(ppw/7/pph*60) };
+  const avgB=DAYS.reduce((a,d)=>a+readBudget({wd:d}),0)/7; // feasible daily mean at current pace
+  const feasPpw=avgB>0?Math.floor(avgB*7/pph*60):0;
+  const projWeeks=feasPpw>0?Math.ceil(rem/feasPpw):99;
+  const proj=dstr(addD(new Date(),projWeeks*7));
+  return { rem, weeks, ppw, minDay:Math.round(ppw/7/pph*60), feasPpw, projWeeks, proj, paused:avgB<=0 };
 }
 function renderBooks(){
   if(!$("bookList")) return;
   $("bookList").innerHTML=(S.books||[]).length?(S.books||[]).map(b=>{
     const p=bookPace(b);
-    return `<div class="mod"><b>📕 ${b.title}</b> — ${b.chapters.length} chapters · ${p.rem}p left · <b>${p.ppw} pages/week</b> to finish by ${b.deadline} (~${p.minDay}m/day at ${S.bookPph||6} pph)
+    const verdict=p.paused?`⏸ reading paused — clear backlog to resume`
+      :(p.proj>p.deadline?`⚠ at a feasible ~${p.feasPpw}p/wk this finishes ~${p.proj}, past deadline — trim chapters or extend deadline`
+      :`✓ on track at ~${p.feasPpw}p/wk feasible (needs ${p.ppw}p/wk)`);
+    const tb=readBudget({wd:wd(new Date())});
+    return `<div class="mod"><b>📕 ${b.title}</b> — ${b.chapters.length} chapters · ${p.rem}p left · deadline asks <b>${p.ppw}p/wk</b> · today’s budget ${tb}m (IIT ${Math.round(iitRate()*100)}% done)<br><span class="muted small">${verdict}</span>
       <div>${b.chapters.map((c,ci)=>{
         const left=Math.max(0,c.pages-(c.done||0));
         return `<label style="display:block"><span style="flex:1">${c.name} — ${c.pages}p <span class="muted">(${left} left)</span></span><input type="number" min="0" max="${c.pages}" value="${c.done||0}" data-bdone="${b.id}:${ci}" style="width:65px" title="pages done"> <a href="#" data-delch="${b.id}:${ci}" title="remove chapter">✕</a></label>`;}).join("")}</div>
@@ -767,6 +799,7 @@ $("ver").textContent="v1.4 · "+todayStr();
   if($("tStart")&&!$("tStart").value){ const n=new Date(); $("tStart").value=dstr(addD(n,(7-n.getDay())%7||7)); } // default: next Sunday
   if($("sDate")&&!$("sDate").value){ const n=new Date(); $("sDate").value=dstr(addD(n,(4-n.getDay()+7)%7||7)); } // default: next Thursday
   if(!S.installed){ S.installed=todayStr(); save(); } // anchor: only relocate days tracked after install
+  if(!S.capMig2){ if(S.cap.Sat===420)S.cap.Sat=360; if(S.cap.Sun===420)S.cap.Sun=360; S.capMig2=true; save(); } // weekends → 6h max
   seedWeek1(); // one-time Week-1 module seed
   seedCollege(); // one-time college timetable seed
   seedBooks(); // one-time CLRS plan seed
