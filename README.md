@@ -36,3 +36,11 @@ Local-first planner. Double-click `index.html` (or serve with `python -m http.se
 
 ## Data
 Stays in browser `localStorage` key `studyOS.v1`. No login, no server.
+
+## Deploy (live link, no local server needed)
+Using the app needs no server at all — just double-click `index.html`. Deployment is only so you can open it from your phone/anywhere via a link.
+One-time setup (~5 min):
+1. On github.com create a repo named `study-os` (**Private** needs a Pro plan for a live link; **Public** works on Free), **without** ticking "Add a README".
+2. In the `study-os` folder, run once: `git remote add origin https://github.com/YOUR-USERNAME/study-os.git` — then double-click **`push.bat`** (a browser login popup handles auth; approve once, it stays signed in).
+3. Repo page → **Settings → Pages** → Deploy from branch → `main`, `/(root)` → Save. Live in ~1 min at `https://YOUR-USERNAME.github.io/study-os/`.
+After that, every change flows automatically: each fix is committed here, and either it gets pushed directly (works once step 2's login persists) or you double-click **`push.bat`** — no typing, and the link refreshes in ~1 min.
