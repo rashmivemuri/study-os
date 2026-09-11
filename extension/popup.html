@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><style>
+body{width:340px;margin:0;padding:14px;font:14px/1.5 system-ui,Segoe UI,Roboto,Arial;background:#0d1428;color:#e9edf5}
+h3{margin:0 0 8px;font-size:15px}
+input,select{width:100%;background:#0c1220;border:1px solid #2a3760;color:#e9edf5;border-radius:8px;padding:7px 9px;margin:4px 0;font:inherit;box-sizing:border-box}
+.row{display:flex;gap:8px}.row>*{flex:1}
+button{background:#6ea8ff;border:0;color:#0a1226;font-weight:700;border-radius:9px;padding:9px;cursor:pointer;width:100%;margin-top:8px;font:inherit}
+button.ghost{background:#1d2946;color:#e9edf5}
+#out{font-size:12px;color:#9aa6c4;margin-top:8px;max-height:180px;overflow:auto;white-space:pre-wrap}
+.small{font-size:12px;color:#9aa6c4}
+.ok{color:#34d399}.warn{color:#fbbf24}
+</style></head>
+<body>
+<h3>📚 Coursera → StudyOS</h3>
+<div class="small">On a module page, press <b>Read</b>. Only titles + durations are read — never video content.</div>
+<input id="course" placeholder="Course (e.g. RDBMS)">
+<div class="row">
+<input id="week" type="number" min="1" max="20" value="1" title="week number">
+<input id="title" placeholder="Module title (optional)">
+</div>
+<button id="read">Read this module page</button>
+<div id="out"></div>
+<button id="send" class="ghost" disabled>Send to StudyOS tab</button>
+<button id="copy" class="ghost" disabled>Copy as paste-text instead</button>
+<div class="small" style="margin-top:8px">Send needs your StudyOS page open (live link or localhost). Copy works anywhere — paste into IIT Modules → Add week's module.</div>
+<script src="popup.js"></script>
+</body>
+</html>

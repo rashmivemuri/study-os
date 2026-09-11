@@ -89,7 +89,18 @@ details.day summary:before{content:""}
 .mini .dot{margin-top:0;width:8px;height:8px}
 .mini.done{opacity:.55}
 .mini.college{border-color:#4c3d80;color:#ddd0fa;background:rgba(167,139,250,.07)}
+.calgrid{display:grid;grid-template-columns:repeat(7,1fr);gap:8px}
 .capgrid{display:grid;grid-template-columns:repeat(7,1fr);gap:10px}
+.calhead{font-size:12px;color:var(--mut);text-align:center;font-weight:800;padding:4px}
+.calblank{min-height:74px}
+.calday{min-height:74px;background:var(--card2);border:1px solid var(--line);border-radius:12px;padding:7px 9px;cursor:pointer;display:flex;flex-direction:column;gap:3px;font-size:13px}
+.calday:hover{border-color:var(--acc)}
+.calday b{font-size:15px}
+.calday span{font-size:12px}
+.calday.today{border-color:var(--acc);box-shadow:0 0 0 1px var(--acc)}
+.calday.sel{border-color:var(--teal);box-shadow:0 0 0 1px var(--teal)}
+.calday.past{opacity:.55}
+@media(max-width:700px){.calday{min-height:56px;font-size:11px}}
 @media(max-width:1000px){.capgrid{grid-template-columns:repeat(4,1fr)}}
 .capgrid label{font-size:13px;color:var(--mut);display:flex;flex-direction:column;gap:5px}
 .mod{border:1px solid var(--line);border-radius:14px;padding:12px 15px;margin-bottom:10px;background:var(--card2);font-size:14px}
