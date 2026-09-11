@@ -104,7 +104,12 @@ function parseDurations(text){
 }
 
 /* ---------- scheduler ---------- */
-function iitVideosLeft(){ const out=[]; S.modules.forEach(mod=>mod.videos.forEach((v,vi)=>{ if(!v.done) out.push({mod,v,vi}); })); return out; }
+/* Trimester week (1-based from Mon Sep 7 2026). Modules release weekly —
+   future weeks stay locked and out of the schedule until they arrive. */
+const TRIM_START = parseD("2026-09-07");
+function triWeek(){ return Math.max(1,Math.floor((new Date()-TRIM_START)/6048e5)+1); }
+function triWeekDate(w){ return dstr(addD(TRIM_START,(w-1)*7)); }
+function iitVideosLeft(){ const out=[]; const cw=triWeek(); S.modules.forEach(mod=>{ if(mod.week>cw) return; mod.videos.forEach((v,vi)=>{ if(!v.done) out.push({mod,v,vi}); }); }); return out; }
 function splitChunk(label, minutes, max=50){
   if (minutes<=max) return [{label, minutes}];
   const n=Math.ceil(minutes/max), per=Math.ceil(minutes/n), arr=[];
@@ -229,6 +234,7 @@ function buildWeek(offset){
   });
   // textbook reading per module (raw minutes, not speed-scaled), same even spread
   S.modules.forEach(mod=>{
+    if(mod.week>triWeek()) return; // unreleased week — unlocks automatically
     const tbMin=(mod.textbook ?? 30);
     if(tbMin>0){
       const key=mod.course+' W'+mod.week;
@@ -661,9 +667,10 @@ function pads(n){ return String(n).padStart(2,"0"); }
 
 function renderModules(){
   $("scraperSnippet").textContent=SCRAPER;
-  $("moduleList").innerHTML=S.modules.length? S.modules.map(m=>{
+  $("moduleList").innerHTML=S.modules.length? [...S.modules].sort((a,b)=>a.week-b.week||(a.course<b.course?-1:1)).map(m=>{
     const tot=m.videos.reduce((a,v)=>a+v.minutes,0), dn=m.videos.filter(v=>v.done).length;
     const spd=S.speed||1, eff=Math.round(tot/spd), tb=(m.textbook ?? 30);
+    if(m.week>triWeek()) return `<div class="mod" style="opacity:.65"><b>${m.course} · Week ${m.week}</b> ${m.title?"· "+m.title:""} — ${m.videos.length} videos · ${tot} min <span class="muted">🔒 releases ~${triWeekDate(m.week)} — auto-unlocks then</span></div>`;
     return `<div class="mod"><b>${m.course} · Week ${m.week}</b> ${m.title?"· "+m.title:""} — ${dn}/${m.videos.length} videos · ${tot} min raw (~${eff} at ${spd}×) + ${tb}m textbook
       <div>${m.videos.map(v=>`<label style="display:block"><input type="checkbox" data-m="${m.id}" data-v="${v.label.replace(/"/g,"&quot;")}" ${v.done?"checked":""}> ${v.label} <span class="muted">(${v.minutes}m)</span></label>`).join("")}</div>
       <div class="row wrap" style="margin-top:6px"><label class="small muted">📖 Textbook min/week <input type="number" min="0" max="300" step="5" value="${tb}" data-tb="${m.id}" style="width:75px"></label>
@@ -780,13 +787,17 @@ function renderTests(){
 }
 /* Book reading plans. Chapters carry page counts (verify against your copy —
    seeds are ~3rd-edition estimates); pace = remaining pages ÷ weeks to deadline. */
-/* Dated exam seeds (your real tests). Runs once, never duplicates. */
+/* Dated exam seeds: full PT/NPT trimester series. Runs once per version. */
 function seedTests(){
-  if(S.testSeeded) return; S.testSeeded=true;
-  if(!(S.tests||[]).some(t=>t.course==="RDBMS"&&t.type==="proctored"&&t.date==="2026-09-14")){
-    S.tests.push({ id:S.seq++, sys:"iitg", course:"RDBMS", type:"proctored", date:"2026-09-14", time:"08:30" });
-    addLog("Seeded Monday RDBMS proctored test (8:00 AM) — 120m exam + prep placed");
-  }
+  if(S.testSeeded&&S.testFullSeeded) return;
+  S.testSeeded=true; S.testFullSeeded=true;
+  let added=0;
+  (typeof SEED_TESTS!=="undefined"?SEED_TESTS:[]).forEach(t=>{
+    if(!(S.tests||[]).some(x=>x.course===t.course&&x.type===t.type&&x.date===t.date)){
+      S.tests.push(Object.assign({ id:S.seq++ },t)); added++;
+    }
+  });
+  if(added) addLog(`Seeded full PT/NPT series (${added} tests) — Mondays PT, Sundays NPT`);
   save();
 }
 function seedBooks(){
@@ -851,36 +862,21 @@ function renderSettings(){
   if($("collegeList")) $("collegeList").querySelectorAll("[data-cday]").forEach(a=>a.onclick=e=>{ e.preventDefault(); S.college[a.dataset.cday].splice(+a.dataset.cidx,1); save(); renderAll(); });
 }
 
-/* Seed Week-1 modules (videos + readings; discussion prompts & labs excluded).
-   Runs once on a fresh install; never touches existing user data. */
+/* Trimester module seeds (full official lists). Versioned: v2 replaces the old
+   Week-1-only seeds, preserving any ticks by matching course+label. */
 function seedWeek1(){
-  if(S.seeded) return; S.seeded=true;
-  if(S.modules.length){ save(); return; }
-  const M=(course,week,title,rows)=>({ id:S.seq++, course, week, title, seed:true, textbook:30,
-    videos: rows.map(r=>({ label:r[0], minutes:r[1], done:false })) });
-  const addM=m=>{ if(!S.modules.some(x=>x.course===m.course&&String(x.week)===String(m.week))) S.modules.push(m); };
-  addM(M("RDBMS",1,"About the Course, Intro to DBMS & Relational Model (3h C-lab excluded)",[
-    ["About the Course",11],["Purpose of Database Systems",7],["Drawbacks of File Systems",11],
-    ["Data Abstractions",5],["Data Model",5],["Relation Data Model",6],["DDL and DML",7],
-    ["SQL Query Language",5],["History of Database Systems and Conclusion",7],["Learning Objectives & Recap",3],
-    ["Relation Schema and Relational Database",8],["Super key, Candidate key, Primary key",9],
-    ["Foreign key, Foreign key constraint",7],["Database Schema Diagram & Conclusion",6],
-    ["📖 Books and References",10],["📖 Week 01 - Lecture Slides",60],["📖 Syllabus for Next Assessment",10],
-    ["📖 Topics to be covered in lab",10],["📖 Solutions: Database File Handling in C",10]
-  ]));
-  addM(M("Java",1,"Overview of JAVA Programming Language (4h lab excluded)",[
-    ["Course Introduction",3],["Why study JAVA",10],["History of JAVA",9],
-    ["Features of JAVA Programming",10],["Basics of Object-Oriented Programming",9],
-    ["Three principles of Object-Oriented Programming",20],["Week 1 Lab Recording",209],
-    ["📖 Reference Books",2],["📖 Lecture Slides",10],["📖 Lab Exercises",10]
-  ]));
-  addM(M("Optimization",1,"Fundamentals of Optimization",[
-    ["Meet your instructor & Course Introduction",14],["Modeling optimization problems",1],
-    ["Formulation of optimization problem part-1",16],["Formulation of optimization problem part-2",10],
-    ["Mathematical Foundations Part-1",23],["Mathematical Foundations Part-2",18],
-    ["📖 Course Syllabus and Reference Books",10],["📖 Week 1 - Slides",20]
-  ]));
-  addLog("Seeded Week-1 modules: RDBMS, Java, Optimization");
+  if(S.seedVer>=2) return;
+  const doneByLabel={};
+  (S.modules||[]).forEach(m=>(m.videos||[]).forEach(v=>{ if(v.done) doneByLabel[m.course+"||"+v.label]=1; }));
+  S.modules=(S.modules||[]).filter(m=>!m.seed);
+  const list=(typeof SEED_MODULES!=="undefined"?SEED_MODULES:[]);
+  list.forEach(sm=>{
+    if(S.modules.some(x=>x.course===sm.course&&String(x.week)===String(sm.week))) return;
+    S.modules.push({ id:S.seq++, course:sm.course, week:sm.week, title:sm.title, seed:true, textbook:30,
+      videos: sm.videos.map(r=>({ label:r[0], minutes:r[1], done:!!doneByLabel[sm.course+"||"+r[0]] })) });
+  });
+  S.seeded=true; S.seedVer=2;
+  addLog(`Loaded full trimester dataset (${list.length} modules) — future weeks unlock automatically`);
   save();
 }
 /* College timetable (blocked hours — never scheduled over).
@@ -934,7 +930,17 @@ $("mPreview").onclick=()=>{
 $("mSave").onclick=()=>{
   const items=parseDurations($("mPaste").value).filter(x=>x.minutes>0);
   if(!items.length){ alert("No video durations found. Check the format — one video per line with e.g. '12:34' or '20 min'."); return; }
-  S.modules.push({ id:S.seq++, course:$("mCourse").value, week:$("mWeek").value, title:$("mTitle").value.trim(), videos:items.map(x=>({label:x.label.slice(0,80),minutes:x.minutes,done:false})) });
+  const ex=S.modules.find(m=>m.course===$("mCourse").value&&String(m.week)===$("mWeek").value);
+  if(ex){
+    if(!confirm(`${ex.course} Week ${ex.week} already exists — replace it with this paste? (ticks kept where titles match)`)) return;
+    const done={}; ex.videos.forEach(v=>{ if(v.done)done[v.label]=1; });
+    ex.title=$("mTitle").value.trim()||ex.title;
+    ex.videos=items.map(x=>({label:x.label.slice(0,80),minutes:x.minutes,done:!!done[x.label.slice(0,80)]}));
+    $("mPaste").value=""; $("mTitle").value=""; save(); renderAll();
+    alert("Module replaced — schedule rebuilt.");
+    return;
+  }
+  S.modules.push({ id:S.seq++, course:$("mCourse").value, week:$("mWeek").value, title:$("mTitle").value.trim(), textbook:30, videos:items.map(x=>({label:x.label.slice(0,80),minutes:x.minutes,done:false})) });
   $("mPaste").value=""; $("mTitle").value="";
   save(); renderAll();
   alert("Module saved — IIT chunks auto-spread into your week's free slots. See Week tab.");
@@ -1007,7 +1013,7 @@ $("eAdd").onclick=()=>{
 };
 $("resetAll").onclick=()=>{ if(confirm("Wipe all StudyOS data?")){ localStorage.removeItem(LSKEY); S=defState(); save(); renderAll(); } };
 $("selfTest").onclick=runSelfTest;
-$("reseedBtn").onclick=()=>{ S.modules=(S.modules||[]).filter(m=>!m.seed); S.seeded=false; seedWeek1(); save(); renderAll(); alert("Week-1 seed reloaded — modules you added yourself were kept."); };
+$("reseedBtn").onclick=()=>{ S.modules=(S.modules||[]).filter(m=>!m.seed); S.seeded=false; S.seedVer=0; seedWeek1(); save(); renderAll(); alert("Trimester dataset reloaded — modules you added yourself were kept."); };
 $("cAdd").onclick=()=>{
   const d=$("cDay").value, s=$("cStart").value.trim(), e=$("cEnd").value.trim(), ti=$("cTitle").value.trim()||"Class";
   if(!/^\d{1,2}:\d{2}$/.test(s)||!/^\d{1,2}:\d{2}$/.test(e)){ alert("Use HH:MM format, e.g. 09:15 and 10:10."); return; }
