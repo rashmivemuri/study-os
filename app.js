@@ -819,6 +819,10 @@ function renderTests(){
 function seedTests(){
   if(S.testSeeded&&S.testFullSeeded) return;
   S.testSeeded=true; S.testFullSeeded=true;
+  // correction: RDBMS PT1 is Tue Sep 15 (not Mon Sep 14) — migrate any existing seed entry
+  (S.tests||[]).forEach(t=>{
+    if(t.course==="RDBMS"&&t.type==="proctored"&&t.date==="2026-09-14"&&!t.movedToSlot2){ t.date="2026-09-15"; }
+  });
   let added=0;
   (typeof SEED_TESTS!=="undefined"?SEED_TESTS:[]).forEach(t=>{
     if(!(S.tests||[]).some(x=>x.course===t.course&&x.type===t.type&&x.date===t.date)){

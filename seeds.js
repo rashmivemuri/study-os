@@ -171,7 +171,7 @@ const SEED_MODULES = [
    weeks (from the official schedule; Java/Opt weekdays assumed same cadence —
    correct me with actual days and I'll shift them). */
 const SEED_TESTS = [
-{ sys:"iitg", course:"RDBMS", type:"proctored", date:"2026-09-14", time:"08:30" },
+{ sys:"iitg", course:"RDBMS", type:"proctored", date:"2026-09-15", time:"08:30" },
 { sys:"iitg", course:"RDBMS", type:"nonproctored", date:"2026-09-27", time:"23:55" },
 { sys:"iitg", course:"RDBMS", type:"proctored", date:"2026-09-28", time:"09:00" },
 { sys:"iitg", course:"RDBMS", type:"nonproctored", date:"2026-10-11", time:"23:55" },
