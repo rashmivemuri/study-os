@@ -817,11 +817,16 @@ function renderTests(){
    seeds are ~3rd-edition estimates); pace = remaining pages ÷ weeks to deadline. */
 /* Dated exam seeds: full PT/NPT trimester series. Runs once per version. */
 function seedTests(){
-  if(S.testSeeded&&S.testFullSeeded) return;
-  S.testSeeded=true; S.testFullSeeded=true;
+  if(S.testVer>=3) return;
+  S.testSeeded=true; S.testFullSeeded=true; S.testVer=3;
   // correction: RDBMS PT1 is Tue Sep 15 (not Mon Sep 14) — migrate any existing seed entry
   (S.tests||[]).forEach(t=>{
     if(t.course==="RDBMS"&&t.type==="proctored"&&t.date==="2026-09-14"&&!t.movedToSlot2){ t.date="2026-09-15"; }
+  });
+  // correction: RDBMS PT2+ are Tuesdays — shift any Monday-seeded entries forward a day
+  const TUE_SHIFT={"2026-09-28":"2026-09-29","2026-10-12":"2026-10-13","2026-10-26":"2026-10-27","2026-11-09":"2026-11-10","2026-11-23":"2026-11-24"};
+  (S.tests||[]).forEach(t=>{
+    if(t.course==="RDBMS"&&t.type==="proctored"&&TUE_SHIFT[t.date]&&!t.movedToSlot2){ t.date=TUE_SHIFT[t.date]; }
   });
   let added=0;
   (typeof SEED_TESTS!=="undefined"?SEED_TESTS:[]).forEach(t=>{
