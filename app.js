@@ -1067,3 +1067,16 @@ $("ver").textContent="v1.4 · "+todayStr();
   renderAll();
   if(moved>0 && $("autoNotice")) $("autoNotice").innerHTML=`<div class="warn" style="border-color:var(--warn);color:#ffe1a8;background:#241c08">⟳ Auto-relocated <b>${moved}</b> unfinished task(s) from past days into your backlog — already fitted into your next free slots. Details in the Relocation log.</div>`;
 })();
+// auto-refresh: recompute the timetable whenever you return to the tab
+// (new day, week rollover, midnight) — re-renders only if something changed,
+// so expanded days and half-typed inputs are never disturbed.
+let lastSeenDay=todayStr();
+function refreshIfNeeded(){
+  const t=todayStr(), dayChanged=t!==lastSeenDay;
+  if(dayChanged) lastSeenDay=t;
+  const moved=autoRelocate();
+  if(dayChanged||moved>0) renderAll();
+}
+document.addEventListener("visibilitychange",()=>{ if(!document.hidden) refreshIfNeeded(); });
+window.addEventListener("focus",()=>refreshIfNeeded());
+setInterval(()=>{ if(todayStr()!==lastSeenDay){ lastSeenDay=todayStr(); autoRelocate(); renderAll(); } },60000);
