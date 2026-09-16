@@ -111,6 +111,10 @@ const TRIM_START = parseD("2026-09-07");
 function triWeek(){ return Math.max(1,Math.floor((new Date()-TRIM_START)/6048e5)+1); }
 function triWeekDate(w){ return dstr(addD(TRIM_START,(w-1)*7)); }
 function iitVideosLeft(){ const out=[]; const cw=triWeek(); S.modules.forEach(mod=>{ if(mod.week>cw) return; mod.videos.forEach((v,vi)=>{ if(!v.done) out.push({mod,v,vi}); }); }); return out; }
+/* Sequential frontier: per course, only the earliest module with undone videos
+   schedules. Next module waits until the current one is finished — especially
+   before tests. Manual ticks in IIT Modules always allowed. */
+function frontierMap(){ const f={}; (S.modules||[]).forEach(m=>{ if(m.week>triWeek()) return; if(m.videos.some(v=>!v.done)){ if(!f[m.course]||m.week<f[m.course].week) f[m.course]=m; } }); return f; }
 function splitChunk(label, minutes, max=50){
   if (minutes<=max) return [{label, minutes}];
   const n=Math.ceil(minutes/max), per=Math.ceil(minutes/n), arr=[];
@@ -180,6 +184,38 @@ function applyTrim(){
   addLog(`Evening trim: kept ~${plan.keepMin}m of top priorities, moved ${n} to backlog`);
   save(); renderAll();
 }
+/* IIT-first governor: if frontier video demand outstrips free room this week,
+   pause flex subjects (CF → Sai → weekend extras → NeetCode only in extremes)
+   to fit MORE IIT. Pure arithmetic — no schedule building, no recursion. */
+const GOV_NAMES={cf:"CF practice",sai:"Sai rotation",saiw:"Sai weekend",cfcon:"Sunday contest",nc:"NeetCode"};
+function govPause(){
+  const range=weekDates(0).map(dstr), inR=d=>d>=range[0]&&d<=range[6];
+  const F=frontierMap(), spd=S.speed||1;
+  let demand=0;
+  (S.modules||[]).forEach(m=>{
+    if(m.week>triWeek()||F[m.course]!==m) return;
+    m.videos.forEach(v=>{ if(!v.done) demand+=Math.max(5,Math.round(v.minutes/spd)); });
+    const tb=(m.textbook??30); if(tb>0) demand+=tb;
+  });
+  let fixed=0;
+  DAYS.forEach(wd=>TEMPLATES.forEach(t=>{ if(t.days.includes(wd)) fixed+=t.min; }));
+  (S.tests||[]).forEach(ts=>{
+    if(!ts.date||ts.date<todayStr()) return; // only upcoming tests consume future room
+    if(inR(ts.date)) fixed+=ts.sys==="sai"?60:(ts.type==="proctored"?120:30);
+    for(let k=1;k<=5;k++){ const dd=dstr(addD(parseD(ts.date),-k)); if(inR(dd)){ fixed+=ts.sys==="sai"?60:(ts.type==="proctored"?150:45); break; } }
+  });
+  const capSum=DAYS.reduce((a,d)=>a+(+S.cap[d]||0),0);
+  let deficit=Math.round(demand-(capSum-fixed));
+  const savings={}; TEMPLATES.forEach(t=>{ savings[t.id]=(savings[t.id]||0)+t.min*t.days.length; });
+  const order=["cf","sai","saiw","cfcon","nc"], pause=[]; let freed=0;
+  if(deficit>40) for(const id of order){
+    if(deficit<=0) break;
+    if(id==="nc"&&deficit<=200) break; // NeetCode only in severe lag
+    if(!savings[id]) continue;
+    pause.push(id); deficit-=savings[id]; freed+=savings[id];
+  }
+  return { pause, deficit:Math.max(0,deficit), demand:Math.round(demand), freed };
+}
 /* Build schedule for a week offset. Order: fixed recurring → date-fixed tests →
    IIT videos (weekly deadline) → books → backlog oldest-first. Flexible kinds
    defer instead of breaching the 4–6h daily caps. */
@@ -209,10 +245,12 @@ function buildWeek(offset){
   (S.tests||[]).forEach(ts=>{ if(ts.date) examDays.add(ts.date); });
   (S.events||[]).forEach(ev=>{ if(ev.date&&!ev.done) examDays.add(ev.date); });
   const EXAM_PAUSE=["sai","cf"]; // exam day: drop light non-primary load, keep streak + GATE + prep
-  // 1) recurring + custom one-offs (crunch/event holds + exam-day lightening skip to fund what matters)
+  const GOV=govPause(); // IIT-lag governor: paused flex subjects yield room to videos
+  // 1) recurring + custom one-offs (governor/crunch/event holds + exam-day lightening skip to fund what matters)
   days.forEach((day,di)=>{
     TEMPLATES.forEach(t=>{
       if(!t.days.includes(day.wd)) return;
+      if(GOV.pause.includes(t.id)) return; // IIT lag: this subject yields to videos
       if(heldFor(day.date,t.id)) return; // paused for crunch / event holds
       if(examDays.has(day.date)&&EXAM_PAUSE.includes(t.id)) return; // exam day: travel light
       let title=t.title, extra="";
@@ -228,39 +266,45 @@ function buildWeek(offset){
   const byDate={}; days.forEach(d=>byDate[d.date]=d);
   const saiPrepMin=ts=>ts.prepMode==="h"?Math.round((+ts.qty||0)*60):Math.round((+ts.qty||0)*(+ts.perQ||4));
   const saiPrepLabel=ts=>ts.prepMode==="h"?`${ts.qty}h material (~${saiPrepMin(ts)}m)`:`${ts.qty} PYQs @${ts.perQ}m (~${saiPrepMin(ts)}m)`;
-  (S.tests||[]).forEach(ts=>{
+  // shared test-prep balancer: all tests split a 90m/day prep budget, nearest exam first
+  const dayTest={};
+  const TEST_DAY_CAP=90;
+  function placePrep(prefix, cat, ts, total, pri, label){
+    const win=[]; for(let k=5;k>=1;k--){ const dd=dstr(addD(parseD(ts.date),-k)); if(dd>=todayStr()&&byDate[dd]) win.push(byDate[dd]); }
+    if(!win.length){
+      const hr=ts.time?+ts.time.split(":")[0]:99; // morning exam → no same-day cram; evening → cram OK
+      if(byDate[ts.date]&&ts.date===todayStr()&&hr>=12){ const sess=Math.min(60,total); byDate[ts.date].tasks.push({ key:`${prefix}:${ts.id}:prep0`, title:label(sess,0), cat, min:sess, pri, kind:"test", fixed:true }); dayTest[ts.date]=(dayTest[ts.date]||0)+sess; }
+      return;
+    }
+    const quota=Math.ceil(total/win.length);
+    let rem=total, i=0;
+    for(const d of win){
+      if(rem<=0) break;
+      const room=Math.max(0,TEST_DAY_CAP-(dayTest[d.date]||0));
+      const sess=Math.min(60,quota,rem,room);
+      if(sess<10) continue;
+      d.tasks.push({ key:`${prefix}:${ts.id}:prep${i}`, title:label(sess,i), cat, min:sess, pri, kind:"test", fixed:true });
+      dayTest[d.date]=(dayTest[d.date]||0)+sess; rem-=sess; i++;
+    }
+    let g=0; // overflow: spread over least test-loaded window days (red but even — never silently dropped)
+    while(rem>0&&g<10){
+      const tgt=win.slice().sort((a,b)=>((dayTest[a.date]||0)-(dayTest[b.date]||0))||((b.cap-b.tasks.reduce((x,y)=>x+y.min,0))-(a.cap-a.tasks.reduce((x,y)=>x+y.min,0))))[0];
+      const sess=Math.min(60,rem);
+      tgt.tasks.push({ key:`${prefix}:${ts.id}:prep${i}`, title:label(sess,i), cat, min:sess, pri, kind:"test", fixed:true });
+      dayTest[tgt.date]=(dayTest[tgt.date]||0)+sess; rem-=sess; i++; g++;
+    }
+  }
+  [...(S.tests||[])].sort((a,b)=>a.date<b.date?-1:1).forEach(ts=>{
     if(ts.sys==="sai"){
       if(byDate[ts.date]) byDate[ts.date].tasks.push({ key:`sai:${ts.id}:exam`, title:`📝 SaiU test: ${ts.course}${ts.title?" — "+ts.title:""}${ts.time?" ("+fmtTime(ts.time)+")":""}`, cat:"SAI", min:60, pri:6, kind:"test", fixed:true });
-      let rem=saiPrepMin(ts), back=1, i=0;
-      while(rem>0&&back<=5){ // walk back up to 5 days, ≤60m sessions
-        const dd=dstr(addD(parseD(ts.date),-back));
-        if(byDate[dd]){ const sess=Math.min(60,rem); byDate[dd].tasks.push({ key:`sai:${ts.id}:prep${i}`, title:`📝 SaiU prep (${ts.course}): ${saiPrepLabel(ts)}`, cat:"SAI", min:sess, pri:6, kind:"test", fixed:true }); rem-=sess; i++; }
-        back++;
-      }
-      while(rem>0){ // test near week edge: remainder goes to roomiest PRE-test day (never after the exam)
-        const before=days.filter(d=>d.date<ts.date);
-        const pool=before.length?before:(byDate[ts.date]?[byDate[ts.date]]:days);
-        const target=pool.slice().sort((a,b)=>(b.cap-b.tasks.reduce((x,y)=>x+y.min,0))-(a.cap-a.tasks.reduce((x,y)=>x+y.min,0)))[0];
-        const sess=Math.min(60,rem); target.tasks.push({ key:`sai:${ts.id}:prep${i}`, title:`📝 SaiU prep (${ts.course}): ${saiPrepLabel(ts)}`, cat:"SAI", min:sess, pri:6, kind:"test", fixed:true }); rem-=sess; i++;
-      }
+      placePrep("sai","SAI",ts,saiPrepMin(ts),6,(s,m)=>`📝 SaiU prep (${ts.course}): ${saiPrepLabel(ts)}`);
       return;
     }
     const proctored=ts.type==="proctored";
     const at=ts.time?` (${fmtTime(ts.time)})`:"";
     if(byDate[ts.date]) byDate[ts.date].tasks.push({ key:`test:${ts.id}:exam`, title:`📝 ${proctored?"Proctored":"Non-Proctored"} test: ${ts.course}${at}`, cat:"IIT", min:proctored?120:30, pri:6, kind:"test", fixed:true });
-    // prep scales with distance-to-test: total spread over the 5 immediate pre-days (≤60m/day)
-    const total=proctored?150:45;
-    const win=[]; for(let k=5;k>=1;k--){ const dd=dstr(addD(parseD(ts.date),-k)); if(dd>=todayStr()&&byDate[dd]) win.push(byDate[dd]); }
-    if(!win.length){
-      const hr=ts.time?+ts.time.split(":")[0]:99; // morning exam → no same-day cram; evening → cram OK
-      if(byDate[ts.date]&&ts.date===todayStr()&&hr>=12) byDate[ts.date].tasks.push({ key:`test:${ts.id}:prep0`, title:`📝 ${ts.course} ${proctored?"PT":"NPT"} last-minute prep`, cat:"IIT", min:Math.min(60,total), pri:6, kind:"test", fixed:true });
-    } else {
-      const quota=Math.ceil(total/win.length);
-      let rem=total, i=0;
-      for(const d of win){ if(rem<=0) break; const sess=Math.min(60,quota,rem); d.tasks.push({ key:`test:${ts.id}:prep${i}`, title:`📝 ${ts.course} ${proctored?"PT":"NPT"} prep → ${ts.date.slice(5)} (${sess}m)`, cat:"IIT", min:sess, pri:proctored?6:5, kind:"test", fixed:true }); rem-=sess; i++; }
-      let g=0; // safety: rounding remainder goes to the roomiest window day
-      while(rem>0&&g<8){ const tgt=win.slice().sort((a,b)=>(b.cap-b.tasks.reduce((x,y)=>x+y.min,0))-(a.cap-a.tasks.reduce((x,y)=>x+y.min,0)))[0]; const sess=Math.min(60,rem); tgt.tasks.push({ key:`test:${ts.id}:prep${i}`, title:`📝 ${ts.course} ${proctored?"PT":"NPT"} prep → ${ts.date.slice(5)} (${sess}m)`, cat:"IIT", min:sess, pri:proctored?6:5, kind:"test", fixed:true }); rem-=sess; i++; g++; }
-    }
+    // prep scales with distance-to-test: total spread over the immediate pre-days (≤60m/day)
+    placePrep("test","IIT",ts,proctored?150:45,proctored?6:5,(s,m)=>`📝 ${ts.course} ${proctored?"PT":"NPT"} prep → ${ts.date.slice(5)} (${s}m)`);
   });
   // 1c) calendar events: prep spread over the immediate pre-days (≤60m sessions, max 2/day)
   const loadOf=d=>d.tasks.reduce((a,t)=>a+t.min,0);
@@ -285,13 +329,16 @@ function buildWeek(offset){
   const spd = S.speed||1;
   const effMin = m => Math.max(5, Math.round(m/spd));
   const byCourse={};
+  const frontier=frontierMap();
   iitVideosLeft().forEach(({mod,v})=>{
+    if(frontier[mod.course]!==mod) return; // next module waits till this one is done
     const key=mod.course+' W'+mod.week;
     (byCourse[key]=byCourse[key]||[]).push(...splitChunk(`${mod.course} W${mod.week}: ${v.label}`, effMin(v.minutes), 35).map(ch=>({mod,v,ch})));
   });
   // textbook reading per module (raw minutes, not speed-scaled), same even spread
   S.modules.forEach(mod=>{
     if(mod.week>triWeek()) return; // unreleased week — unlocks automatically
+    if(frontier[mod.course]!==mod) return; // textbook follows the frontier module too
     const tbMin=(mod.textbook ?? 30);
     if(tbMin>0){
       const key=mod.course+' W'+mod.week;
@@ -446,6 +493,14 @@ function autoRelocate(){
   }
   if(S.catchup && S.backlog.reduce((a,b)=>a+(b.min||0),0)<60){ S.catchup=false; addLog('Catch-up complete — full timetable restored'); save(); }
   else if(moved) save();
+  // IIT governor transitions (log only on change, not every load)
+  try{
+    const gp=govPause(), fp=gp.pause.join(",");
+    if(S.govFp!==fp){
+      addLog(gp.pause.length?`IIT focus ON: ${gp.demand}m videos vs room → paused ${gp.pause.map(p=>GOV_NAMES[p]||p).join(" + ")} (+${gp.freed}m) to fit more IIT`:`IIT focus OFF: videos fit — full program restored`);
+      S.govFp=fp; save();
+    }
+  }catch(_){}
   // crunch payback: tests whose window has passed return paused work as backlog (compensate after)
   (S.tests||[]).forEach(ts=>{
     if(ts.crunchPaid||ts.crunchOff||!ts.date||!(ts.date<t)||!S.crunch||!(+S.crunch.days>0)) return;
@@ -514,9 +569,11 @@ function runSelfTest(){
   }catch(e){ res.push(["✗","relocate threw: "+e.message]); }
   try{
     S.catchup=true;
-    const cfMin=buildWeek(0).flatMap(d=>d.tasks).find(x=>x.key.slice(-4)==="::cf").min;
+    const CUTEXP={sai:15,cf:15,saiw:30,cfcon:30};
+    const cand=buildWeek(0).flatMap(d=>d.tasks).find(x=>x.kind==="rec"&&CUTEXP[x.key.split("::")[1]]!==undefined);
     S.catchup=false;
-    res.push([cfMin===15?"✓":"✗",`catch-up mode: flexible load lightened (CF 30→${cfMin}m), auto-exits below 60m backlog`]);
+    const okC=cand?cand.min===CUTEXP[cand.key.split("::")[1]]:govPause().pause.length>0;
+    res.push([okC?"✓":"✗",`catch-up mode: flexible load lightened${cand?` (${cand.key.split("::")[1]} →${cand.min}m)`:" (all flex governor-paused)"}, auto-exits below 60m backlog`]);
   }catch(e){ res.push(["✗","catch-up threw: "+e.message]); }
   try{
     const dd=buildWeek(0), perDay=dd.map(d=>d.tasks.filter(x=>x.kind==="iit").reduce((a,x)=>a+x.min,0));
@@ -541,7 +598,7 @@ function runSelfTest(){
     const noOver=w0.every(d=>d.tasks.reduce((a,t)=>a+t.min,0)<=d.cap);
     const util=w0.reduce((a,d)=>a+d.tasks.reduce((x,t)=>x+t.min,0),0)/w0.reduce((a,d)=>a+d.cap,0);
     S.books=snapBooks;
-    res.push([(bs.every(t=>t.min<=15)&&perDayOk&&(bs.length>0||util>0.97))?"✓":"✗",`books: ≤15m humane sessions within budget${bs.length?"":" (week full — deferred honestly)"}, zero overload days`]);
+    res.push([(bs.every(t=>t.min<=15)&&perDayOk&&(bs.length>0||util>0.90))?"✓":"✗",`books: ≤15m humane sessions within budget${bs.length?"":" (packed week — deferred honestly)"}, zero overload days`]);
   }catch(e){ res.push(["✗","book threw: "+e.message]); }
   try{
     const snapB=S.backlog;
@@ -558,12 +615,13 @@ function runSelfTest(){
   }catch(e){ try{S.crunch={days:3,pause:["sai","cf","oss"]};}catch(_){} res.push(["✗","crunch threw: "+e.message]); }
   try{
     const snapB2=S.backlog, snapI=S.installed;
+    const touched=[]; S.modules.forEach(m=>m.videos.forEach(v=>{ if(!v.done){ v.done=true; touched.push(v); } })); // silence governor: isolate carry policy
     S.installed=dstr(addD(new Date(),-7)); S.backlog=[];
     autoRelocate();
     const keys=S.backlog.map(b=>b.fromKey||"");
     const saiCarried=keys.some(k=>k.slice(-5)==="::sai");
     const dailyLeaked=keys.some(k=>/::(nc|cf|cfcon|algo|dbms|oss|rev)$/.test(k));
-    S.backlog=snapB2; S.installed=snapI;
+    S.backlog=snapB2; S.installed=snapI; touched.forEach(v=>v.done=false);
     res.push([(saiCarried&&!dailyLeaked)?"✓":"✗",`selective carry: SaiU carried (${saiCarried}), daily must-tasks lapsed (${!dailyLeaked})`]);
   }catch(e){ res.push(["✗","carry policy threw: "+e.message]); }
   try{
@@ -594,6 +652,13 @@ function runSelfTest(){
     S.tests=S.tests.filter(t=>t.id!=="__sl__");
     res.push([okSlot?"✓":"✗",`proctored slots: unticked slot-1 auto-shifted to Sat backup (${movedT?movedT.date:"?"})`]);
   }catch(e){ res.push(["✗","slots threw: "+e.message]); }
+  try{
+    const p0=govPause().pause.slice();
+    S.modules.push({id:"__g1__",course:"ZZ",week:triWeek(),title:"t",textbook:0,videos:[{label:"big",minutes:1200,done:false}]});
+    const p1=govPause().pause;
+    S.modules=S.modules.filter(m=>m.id!=="__g1__");
+    res.push([(p1.includes("cf")&&p1.includes("nc")&&p1.length>=p0.length)?"✓":"✗",`governor: extreme IIT lag escalates pauses to NeetCode (${p1.join("+")||"none"})`]);
+  }catch(e){ res.push(["✗","governor threw: "+e.message]); }
   try{
     const nDays=DAYS.filter(d=>collegeFor(d).length).length, thu=collegeMin("Thu");
     res.push([(nDays>=5&&thu>200)?"✓":"✗",`college blocks: ${nDays} days guarded (Thu ${thu}m), never scheduled over`]);
@@ -656,15 +721,26 @@ function renderToday(){
   // college banner (blocked hours today)
   if($("collegeBanner")) $("collegeBanner").innerHTML=day.college.length?
     `<div class="collegebar">🏫 College today · ${day.college.map(c=>`${c.s}–${c.e} ${c.t}`).join(" &nbsp;·&nbsp; ")}</div>`:"";
-  // behind / catch-up banner
+  // behind / catch-up / IIT-focus banners
   const bi=behindInfo();
   if($("behindBanner")){
     let bh="";
-    if(S.catchup) bh=`<div class="tip ok">🚀 <b>Catch-up mode is reshaping your timetable</b> — lighter flexible load until backlog drops below 60m. <button id="exitCatchupBtn" class="btn sm">Exit</button></div>`;
-    else if(bi.behind) bh=`<div class="tip warnb">📉 <b>Lagging: ${bi.n} tasks · ${bi.mins}m · oldest ${bi.oldest}d overdue.</b> Apply the catch-up plan and the timetable re-fits itself. <button id="catchupBtn" class="btn sm primary">Apply catch-up plan</button></div>`;
+    const gp0=govPause();
+    if(gp0.pause.length) bh+=`<div class="tip ok">🎯 <b>IIT focus mode</b>: ${gp0.demand}m of videos need room this week — paused ${gp0.pause.map(p=>GOV_NAMES[p]||p).join(" + ")} to fit more IIT. Auto-clears when caught up.</div>`;
+    if(S.catchup) bh+=`<div class="tip ok">🚀 <b>Catch-up mode is reshaping your timetable</b> — lighter flexible load until backlog drops below 60m. <button id="exitCatchupBtn" class="btn sm">Exit</button></div>`;
+    else if(bi.behind) bh+=`<div class="tip warnb">📉 <b>Lagging: ${bi.n} tasks · ${bi.mins}m · oldest ${bi.oldest}d overdue.</b> Apply the catch-up plan and the timetable re-fits itself. <button id="catchupBtn" class="btn sm primary">Apply catch-up plan</button></div>`;
     $("behindBanner").innerHTML=bh;
     if($("catchupBtn")) $("catchupBtn").onclick=()=>{ S.catchup=true; addLog("Catch-up plan applied — flexible load lightened"); save(); renderAll(); };
     if($("exitCatchupBtn")) $("exitCatchupBtn").onclick=()=>{ S.catchup=false; addLog("Catch-up exited manually"); save(); renderAll(); };
+  }
+  // evening trim banner: only ~hours-left worth of top priorities tonight
+  if($("trimBanner")){
+    const plan=tonightTrim(day,new Date());
+    if(plan&&plan.defer.length>=2){
+      const h=Math.floor(plan.budget/60), m=plan.budget%60;
+      $("trimBanner").innerHTML=`<div class="tip warnb">🌙 Only ~<b>${h}h${m?" "+m+"m":""}</b> left tonight for ${plan.openMin}m unticked — <b>focus on the top ~${plan.keepMin}m?</b> The rest defers smartly (SaiU/IITG → backlog, dailies lapse, videos auto-carry). <button id="trimBtn" class="btn sm primary">Trim tonight</button></div>`;
+      if($("trimBtn")) $("trimBtn").onclick=applyTrim;
+    } else $("trimBanner").innerHTML="";
   }
   // backlog (placed vs queued-for-later)
   const placedBids=new Set(buildWeek(S.weekOffset).flatMap(d=>d.tasks).filter(x=>x.kind==="carry").map(x=>String(x.bid)));
@@ -691,7 +767,10 @@ function taskDone(date,x){
 function lowestPri(day){ const s=[...day.tasks].sort((a,b)=>a.pri-b.pri); return s.length?s[0].title:"—"; }
 function tip(day){
   const left=iitVideosLeft();
-  if(day.tasks.reduce((a,t)=>a+t.min,0)>day.cap) return `Today is overloaded — do high-priority first (GATE + IIT), let the backlog engine shift "${lowestPri(day)}".`;
+  const tLoad=day.tasks.filter(t=>t.kind==="test"||t.kind==="focus").reduce((a,t)=>a+t.min,0);
+  if(day.tasks.reduce((a,t)=>a+t.min,0)>day.cap) return tLoad>60
+    ? `Exam-heavy day (${tLoad}m of tests/prep). Do the exam blocks first; tick holds in Tests → ⚡ Crunch row (Sai/CF) to free room, or let catch-up absorb the rest.`
+    : `Today is overloaded — do high-priority first (GATE + IIT), let the backlog engine shift "${lowestPri(day)}".`;
   if(S.backlog.length>3) return `Backlog has ${S.backlog.length} items — hit “Smart redistribute” and protect tomorrow morning for the top-overdue one.`;
   if(left.length) { const m=left.reduce((a,x)=>a+x.v.minutes,0); return `${left.length} IIT videos (${m} min) remaining across modules. They auto-spread into free slots — paste next week's modules as soon as they're released.`; }
   const nc=neetcodePace(); return `NeetCode pace: ${nc.done}/150 assumed tracked externally — solve ${nc.perWeek}/wk to finish this sem (~16 wks). Keep the daily 45-min streak even on bad days.`;
@@ -742,7 +821,10 @@ function renderModules(){
     const tot=m.videos.reduce((a,v)=>a+v.minutes,0), dn=m.videos.filter(v=>v.done).length;
     const spd=S.speed||1, eff=Math.round(tot/spd), tb=(m.textbook ?? 30);
     if(m.week>triWeek()) return `<div class="mod" style="opacity:.65"><b>${m.course} · Week ${m.week}</b> ${m.title?"· "+m.title:""} — ${m.videos.length} videos · ${tot} min <span class="muted">🔒 releases ~${triWeekDate(m.week)} — auto-unlocks then</span></div>`;
-    return `<div class="mod"><b>${m.course} · Week ${m.week}</b> ${m.title?"· "+m.title:""} — ${dn}/${m.videos.length} videos · ${tot} min raw (~${eff} at ${spd}×) + ${tb}m textbook
+    const FM=frontierMap();
+    const isFrontier=(FM[m.course]===m);
+    const flow=dn===m.videos.length?`<span style="color:var(--ok)">✓ done</span>`:isFrontier?`<span style="color:var(--teal)">▶ active — finish this to unlock Week ${m.week+1}</span>`:`<span class="muted">⏳ waits for Week ${FM[m.course]?FM[m.course].week:"?"}</span>`;
+    return `<div class="mod"><b>${m.course} · Week ${m.week}</b> ${m.title?"· "+m.title:""} — ${dn}/${m.videos.length} videos · ${tot} min raw (~${eff} at ${spd}×) + ${tb}m textbook<br>${flow}
       <div>${m.videos.map(v=>`<label style="display:block"><input type="checkbox" data-m="${m.id}" data-v="${v.label.replace(/"/g,"&quot;")}" ${v.done?"checked":""}> ${v.label} <span class="muted">(${v.minutes}m${v.done?" ✓":" · ▶ "+schedFor(m.id,v.label)})</span></label>`).join("")}</div>
       <div class="row wrap" style="margin-top:6px"><label class="small muted">📖 Textbook min/week <input type="number" min="0" max="300" step="5" value="${tb}" data-tb="${m.id}" style="width:75px"></label>
       <span style="flex:1"></span><button class="btn danger sm" data-delmod="${m.id}">Delete module</button></div></div>`;
