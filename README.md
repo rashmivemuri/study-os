@@ -5,7 +5,7 @@ Option A (easiest): open File Explorer → `C:\Users\Administrator\.gemini\study
 Option B: in that folder run `python -m http.server 8000`, then open `http://localhost:8000`.
 
 ## How to check it's working
-1. **Settings → Run self-test** — expect 17 ✓ lines.
+1. **Settings → Run self-test** — expect 18 ✓ lines.
 2. **IIT Modules → Preview parse** with the example text — expect "3 videos · total ~78 min".
 3. **Today**: tick a box → progress bar moves → reload the page → tick persists.
 4. **Relocation proof**: leave a task unticked → next day open the app → orange banner "Auto-relocated N unfinished task(s)" + entry in the Relocation log + `↩` item in a future day (Week tab).

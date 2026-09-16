@@ -349,26 +349,32 @@ function buildWeek(offset){
   const iitLoad=d=>d.tasks.filter(t=>t.kind==="iit").reduce((a,t)=>a+t.min,0);
   const dayIdx=d=>(parseD(d.date).getDay()+6)%7;
   const cutoffFor=course=>((((S.ptBackup||{})[course])||{}).day==="Sun")?6:5; // material done by exam eve
+  const dayCourse={}; // no two slots of the same subject in a day, unless forced
   let more=true;
   while(more){
     more=false;
     for(const c of courses){
       const q=byCourse[c]; if(!q.length) continue;
       const item=q.shift(); more=true;
-      // least-loaded day with room on/before the course's exam eve; later days excluded
-      const roomy=days.filter(d=>free(d)>=item.ch.minutes&&dayIdx(d)<=cutoffFor(item.mod.course)&&!heldFor(d.date,"iit"));
+      const ck="|"+item.mod.course+"|"+(item.tb?"tb":"vid"); // video+reading may pair; two videos never share a day unless forced
+      // least-loaded day with room on/before exam eve, without this course yet
+      let roomy=days.filter(d=>free(d)>=item.ch.minutes&&dayIdx(d)<=cutoffFor(item.mod.course)&&!heldFor(d.date,"iit")&&!dayCourse[d.date+ck]);
+      if(!roomy.length) roomy=days.filter(d=>free(d)>=item.ch.minutes&&dayIdx(d)<=cutoffFor(item.mod.course)&&!heldFor(d.date,"iit")); // huge constraint: allow the double
       if(!roomy.length) continue; // nothing fits this week → stays undone, auto-carries to next week (never forced red)
       const target=roomy.slice().sort((a,b)=>iitLoad(a)-iitLoad(b)||free(a)-free(b))[0];
+      dayCourse[target.date+ck]=1;
       target.tasks.push({ key:`iit:${item.mod.id}:${item.v.label}:${item.ch.label}`, title:"▶ "+item.ch.label, cat:"IIT", min:item.ch.minutes, pri:5, kind:"iit", tb:!!item.tb, modId:item.mod.id, vlabel:item.v.label, chunk:item.ch.label });
     }
   }
-  // 2b) book reading: ≤2 sessions/day inside the adaptive budget; the rest defers — never red
+  // 2b) book reading: 1 session/day (2 if a SaiU test looms ≤3d); the rest defers — never red
   const pph=+S.bookPph||6;
+  const soonSai=(S.tests||[]).some(ts=>ts.sys==="sai"&&ts.date>=todayStr()&&ts.date<=dstr(addD(new Date(),3)));
+  const bookCap=soonSai?2:1;
   (S.books||[]).forEach(b=>b.chapters.forEach((c,ci)=>{
     const left=Math.max(0,(+c.pages||0)-(+c.done||0));
     if(left<=0) return;
     splitChunk(`📕 ${b.title}: ${c.name}`, Math.max(10,Math.ceil(left/pph*60)), 15).forEach(ch=>{
-      const roomy=days.filter(d=>free(d)>=ch.minutes&&d.tasks.filter(t=>t.kind==="book").length<2&&bookLoadOf(d)+ch.minutes<=readBudget(d)&&!heldFor(d.date,"sai"));
+      const roomy=days.filter(d=>free(d)>=ch.minutes&&d.tasks.filter(t=>t.kind==="book").length<bookCap&&bookLoadOf(d)+ch.minutes<=readBudget(d)&&!heldFor(d.date,"sai"));
       if(!roomy.length) return; // deferred to a future week, not dropped
       const target=roomy.slice().sort((a,x)=>bookLoadOf(a)-bookLoadOf(x))[0];
       const pp=Math.max(1,Math.round(ch.minutes/60*pph));
@@ -418,6 +424,7 @@ function closeDay(dateStr){
       return;
     }
     if(!carriesOver(t)) return; // everyday must-tasks lapse — only SaiU/IITG carry
+    if(isStalePrep(t)) return; // stale prep dissolves on close too
     if(!isDone(dateStr,t.key) && !S.backlog.some(b=>b.fromKey===t.key)){
       S.backlog.push({ id:S.seq++, title:t.title, cat:t.cat, min:t.min, pri:t.pri, fromDate:dateStr, fromKey:t.key, overdue:1 });
       moved++;
@@ -458,6 +465,15 @@ function ptBackupDate(ts){
   if(s2<=todayStr()) s2=dstr(addD(parseD(s2),7));
   return { date:s2, time:cfg.time||ts.time||"" };
 }
+/* Stale prep dissolves: a past, unticked prep session never becomes backlog —
+   the full prep total automatically re-spreads over the remaining pre-days.
+   Exam blocks themselves still carry/shift. */
+function prepExamDate(x){
+  if(x.kind==="focus"&&x.eid!==undefined){ const ev=(S.events||[]).find(y=>String(y.id)===String(x.eid)); return ev?ev.date:null; }
+  if(x.kind==="test"&&x.key.indexOf(":prep")>-1){ const id=x.key.split(":")[1]; const tm=(S.tests||[]).find(y=>String(y.id)===String(id)); return tm?tm.date:null; }
+  return null;
+}
+function isStalePrep(x){ return prepExamDate(x)!==null; }
 function autoRelocate(){
   if(!Array.isArray(S.log)) S.log=[];
   const t=todayStr(); let moved=0;
@@ -484,6 +500,7 @@ function autoRelocate(){
         return;
       }
       if(!carriesOver(x)) return; // everyday must-tasks lapse — only SaiU/IITG carry
+      if(isStalePrep(x)) return; // stale prep dissolves; full amount re-spreads over remaining pre-days
       if(d < t && !isDone(d,x.key) && !S.backlog.some(b=>b.fromKey===x.key)){
         S.backlog.push({ id:S.seq++, title:x.title, cat:x.cat, min:x.min, pri:x.pri, fromDate:d, fromKey:x.key, overdue:1 });
         addLog(`"${x.title.slice(0,50)}" missed on ${d} → backlog`);
@@ -493,6 +510,13 @@ function autoRelocate(){
   }
   if(S.catchup && S.backlog.reduce((a,b)=>a+(b.min||0),0)<60){ S.catchup=false; addLog('Catch-up complete — full timetable restored'); save(); }
   else if(moved) save();
+  // one-time cleanup: drop old prep-backlog artifacts (stale sessions from before dissolve rule)
+  if(!S.prepCleaned){
+    const n0=S.backlog.length;
+    S.backlog=S.backlog.filter(b=>!(b.fromKey&&(b.fromKey.indexOf(":prep")>-1||b.fromKey.indexOf("focus:")===0)));
+    if(S.backlog.length!==n0) addLog(`Cleaned ${n0-S.backlog.length} stale prep leftover(s) — upcoming prep re-spreads automatically`);
+    S.prepCleaned=true; save();
+  }
   // IIT governor transitions (log only on change, not every load)
   try{
     const gp=govPause(), fp=gp.pause.join(",");
@@ -582,11 +606,12 @@ function runSelfTest(){
     res.push([(used>=5&&flexOk)?"✓":"✗",`IIT spread: ${used}/7 days share the load (${perDay.join("/")}); non-test load never breaches caps`]);
   }catch(e){ res.push(["✗","spread threw: "+e.message]); }
   try{
-    const th2=dstr(addD(monday(0),3));
+    const th2=dstr(addD(parseD(todayStr()),2));
     S.tests.push({id:"__ts__",sys:"sai",course:"DAA",title:"DP",date:th2,prepMode:"q",qty:75,perQ:4});
-    const w2=buildWeek(0);
-    const examOk=w2.find(d=>d.date===th2).tasks.some(t=>t.key==="sai:__ts__:exam"&&t.min===60);
-    const prepSum=w2.flatMap(d=>d.tasks).filter(t=>t.key.indexOf("sai:__ts__:prep")===0).reduce((a,t)=>a+t.min,0);
+    const offs2=[...new Set([0,weekOf(th2)])];
+    const all2=offs2.flatMap(o=>buildWeek(o).flatMap(d=>d.tasks.map(t=>({t,date:d.date}))));
+    const examOk=all2.some(x=>x.t.key==="sai:__ts__:exam"&&x.t.min===60);
+    const prepSum=all2.filter(x=>x.t.key.indexOf("sai:__ts__:prep")===0).reduce((a,x)=>a+x.t.min,0);
     S.tests=S.tests.filter(t=>t.id!=="__ts__");
     res.push([(examOk&&prepSum===300)?"✓":"✗",`sai test: 60m exam + 75 PYQs → ${prepSum}m prep spread (expect 300)`]);
   }catch(e){ res.push(["✗","sai test threw: "+e.message]); }
@@ -666,6 +691,13 @@ function runSelfTest(){
     S.tests=S.tests.filter(t=>t.id!=="__sup__"); S.backlog=snapBT;
     res.push([(examOk&&prepOk)?"✓":"✗",`test supremacy: 120m exam + full 150m prep survive a flooded week, pre-dated`]);
   }catch(e){ res.push(["✗","supremacy threw: "+e.message]); }
+  try{
+    S.tests.push({id:"__d__",sys:"iitg",course:"RDBMS",type:"proctored",date:dstr(addD(parseD(todayStr()),2))});
+    const dissolves=isStalePrep({kind:"test",key:"test:__d__:prep0"});
+    const keeps=!isStalePrep({kind:"test",key:"test:__d__:exam"});
+    S.tests=S.tests.filter(t=>t.id!=="__d__");
+    res.push([(dissolves&&keeps)?"✓":"✗",`stale prep dissolves (full amount re-spreads), exam blocks still carry`]);
+  }catch(e){ res.push(["✗","dissolve threw: "+e.message]); }
   try{
     const p0=govPause().pause.slice();
     S.modules.push({id:"__g1__",course:"ZZ",week:triWeek(),title:"t",textbook:0,videos:[{label:"big",minutes:1200,done:false}]});
