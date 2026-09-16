@@ -653,6 +653,20 @@ function runSelfTest(){
     res.push([okSlot?"✓":"✗",`proctored slots: unticked slot-1 auto-shifted to Sat backup (${movedT?movedT.date:"?"})`]);
   }catch(e){ res.push(["✗","slots threw: "+e.message]); }
   try{
+    // supremacy: bury the week in backlog, then demand a Monday PT — exam+prep must survive whole
+    const snapBT=S.backlog;
+    for(let i=0;i<8;i++) S.backlog.push({ id:"sup"+i, title:"flood", cat:"GATE", min:120, pri:1, fromDate:"2026-09-01", overdue:1 });
+    const monF=dstr(addD(monday(0),7));
+    S.tests.push({id:"__sup__",sys:"iitg",course:"RDBMS",type:"proctored",date:monF,time:"08:00"});
+    const offs=[...new Set([0,1,weekOf(monF)])];
+    const items=offs.flatMap(o=>buildWeek(o).flatMap(d=>d.tasks.map(t=>({t,date:d.date}))));
+    const examOk=items.some(x=>x.t.key==="test:__sup__:exam"&&x.t.min===120);
+    const pr=items.filter(x=>x.t.key.indexOf("test:__sup__:prep")===0);
+    const prepOk=pr.reduce((a,x)=>a+x.t.min,0)===150&&pr.every(x=>x.date<monF);
+    S.tests=S.tests.filter(t=>t.id!=="__sup__"); S.backlog=snapBT;
+    res.push([(examOk&&prepOk)?"✓":"✗",`test supremacy: 120m exam + full 150m prep survive a flooded week, pre-dated`]);
+  }catch(e){ res.push(["✗","supremacy threw: "+e.message]); }
+  try{
     const p0=govPause().pause.slice();
     S.modules.push({id:"__g1__",course:"ZZ",week:triWeek(),title:"t",textbook:0,videos:[{label:"big",minutes:1200,done:false}]});
     const p1=govPause().pause;
