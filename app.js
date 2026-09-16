@@ -45,7 +45,7 @@ const GOALS = {
 const SCRAPER = `// Paste in Coursera page console (F12), Enter → durations copied.\n(() => {\n  const t = document.body.innerText;\n  const re = /(?:(\\d+)\\s*h[^\\d]{0,3})?(\\d{1,3})\\s*[:m]\\s*(\\d{1,2})?\\s*(?:min|m)?/gi;\n  const lines = [...document.querySelectorAll('a,span,div')]\n    .map(e => e.innerText.trim()).filter(s => s && s.length < 120);\n  const out = [];\n  document.querySelectorAll('*').forEach(() => {});\n  // fallback: grab every mm:ss-looking string with its row label\n  const rows = [...document.querySelectorAll('[data-testid],li,a')].map(e=>e.innerText.replace(/\\s+/g,' ').trim()).filter(Boolean);\n  const pat = /(.{3,80}?)\\s+(\\d{1,2}:\\d{2}(?::\\d{2})?|\\d+\\s*min)/;\n  rows.forEach(r => { const m = r.match(pat); if (m) out.push(m[1].slice(0,60) + ' — ' + m[2]); });\n  const uniq = [...new Set(out)].join('\\n') || t.match(/\\d{1,2}:\\d{2}(:\\d{2})?/g)?.join('\\n') || 'No durations found — copy manually';\n  navigator.clipboard.writeText(uniq).then(()=>alert('Copied '+uniq.split('\\n').length+' lines. Paste into StudyOS → IIT Modules.'));\n})();`;
 
 /* ---------- store ---------- */
-function defState(){ return { checks:{}, backlog:[], modules:[], custom:[], tests:[], testSeeded:false, events:[], ptBackup:{RDBMS:{day:"Sat",time:""},Java:{day:"Sat",time:""},Optimization:{day:"Sat",time:""}}, crunch:{days:3,pause:["sai","cf"]}, books:[], bookSeeded:false, bookPph:6, bookMaxDay:30, college:{}, collegeSeeded:false, log:[], seeded:false, speed:1.5, catchup:false, cap:{Mon:200,Tue:180,Wed:200,Thu:180,Fri:200,Sat:240,Sun:240}, weekOffset:0, seq:1 }; }
+function defState(){ return { checks:{}, backlog:[], modules:[], custom:[], tests:[], testSeeded:false, events:[], ptBackup:{RDBMS:{day:"Sat",time:"19:30"},Java:{day:"Sat",time:"20:30"},Optimization:{day:"Sun",time:"19:30"}}, crunch:{days:3,pause:["sai","cf"]}, books:[], bookSeeded:false, bookPph:6, bookMaxDay:30, college:{}, collegeSeeded:false, log:[], seeded:false, speed:1.5, catchup:false, cap:{Mon:200,Tue:180,Wed:200,Thu:180,Fri:200,Sat:240,Sun:240}, weekOffset:0, seq:1 }; }
 let S;
 try { S = JSON.parse(localStorage.getItem(LSKEY)) || defState(); } catch { S = defState(); }
 S = Object.assign(defState(), S);
@@ -137,6 +137,49 @@ function readBudget(d){
   const base=Math.min(+S.bookMaxDay||30,30)*pace;
   return Math.max(15,Math.round(base*Math.max(0.5,1-collegeMin(d.wd)/480)));
 }
+/* Energy slots shared by the day ordering and the evening trim. */
+const SLOT={sai:1,saiw:1,custom:2,algo:2,dbms:2,test:2,focus:2,iit:2,book:2,nc:3,cf:3,cfcon:3,oss:4};
+function slotOf(t){
+  if(t.kind==="rec") return SLOT[t.key.split("::")[1]]??2;
+  if(t.kind==="carry") return t.pri>=4?2:3;
+  return SLOT[t.kind]??2;
+}
+/* Evening trim: as the 9:30pm–1am window burns down, keep only the top-priority
+   ~hours-left worth; the rest defers (SaiU/IITG → backlog, dailies lapse,
+   IIT videos auto-carry). Pure function of (day, now) for testability. */
+function studyLeftMin(nowD){
+  const n=nowD.getHours()*60+nowD.getMinutes();
+  if(n<5*60) return Math.max(0,300-n); // still inside tonight's session
+  if(n<21*60+30) return 1e9; // evening hasn't started: full night ahead
+  return Math.max(0,25*60-n); // until 1:00 AM
+}
+function tonightTrim(day, nowD){
+  const budget=studyLeftMin(nowD);
+  const open=day.tasks.filter(x=>!taskDone(day.date,x));
+  const openMin=open.reduce((a,x)=>a+x.min,0);
+  if(!(budget<openMin)) return null;
+  const sorted=[...open].sort((a,b)=>(b.pri-a.pri)||(slotOf(a)-slotOf(b)));
+  let acc=0; const keep=new Set();
+  for(const x of sorted){ if(acc+x.min<=budget+15){ keep.add(x.key); acc+=x.min; } }
+  if(!keep.size&&sorted.length){ keep.add(sorted[0].key); acc=sorted[0].min; }
+  return { budget:Math.round(Math.min(budget,1e6)), openMin, keepMin:acc, defer:open.filter(x=>!keep.has(x.key)) };
+}
+function applyTrim(){
+  const t=todayStr();
+  const day=buildWeek(weekOf(t)).find(d=>d.date===t); if(!day) return;
+  const plan=tonightTrim(day,new Date());
+  if(!plan||!plan.defer.length){ alert("Tonight already fits — nothing to trim."); return; }
+  let n=0;
+  plan.defer.forEach(x=>{
+    if(x.kind==="iit"&&!x.tb) return;
+    if(!carriesOver(x)) return;
+    if(S.backlog.some(b=>b.fromKey===x.key)) return;
+    S.backlog.push({ id:S.seq++, title:x.title, cat:x.cat, min:x.min, pri:x.pri, fromDate:t, fromKey:x.key, overdue:0 });
+    n++;
+  });
+  addLog(`Evening trim: kept ~${plan.keepMin}m of top priorities, moved ${n} to backlog`);
+  save(); renderAll();
+}
 /* Build schedule for a week offset. Order: fixed recurring → date-fixed tests →
    IIT videos (weekly deadline) → books → backlog oldest-first. Flexible kinds
    defer instead of breaching the 4–6h daily caps. */
@@ -204,7 +247,7 @@ function buildWeek(offset){
     }
     const proctored=ts.type==="proctored";
     const at=ts.time?` (${fmtTime(ts.time)})`:"";
-    if(byDate[ts.date]) byDate[ts.date].tasks.push({ key:`test:${ts.id}:exam`, title:`📝 ${proctored?"Proctored":"Non-Proctored"} test: ${ts.course}${at}`, cat:"IIT", min:proctored?120:60, pri:6, kind:"test", fixed:true });
+    if(byDate[ts.date]) byDate[ts.date].tasks.push({ key:`test:${ts.id}:exam`, title:`📝 ${proctored?"Proctored":"Non-Proctored"} test: ${ts.course}${at}`, cat:"IIT", min:proctored?120:30, pri:6, kind:"test", fixed:true });
     // prep scales with distance-to-test: total spread over the 5 immediate pre-days (≤60m/day)
     const total=proctored?150:45;
     const win=[]; for(let k=5;k>=1;k--){ const dd=dstr(addD(parseD(ts.date),-k)); if(dd>=todayStr()&&byDate[dd]) win.push(byDate[dd]); }
@@ -257,14 +300,16 @@ function buildWeek(offset){
   });
   const courses=Object.keys(byCourse);
   const iitLoad=d=>d.tasks.filter(t=>t.kind==="iit").reduce((a,t)=>a+t.min,0);
+  const dayIdx=d=>(parseD(d.date).getDay()+6)%7;
+  const cutoffFor=course=>((((S.ptBackup||{})[course])||{}).day==="Sun")?6:5; // material done by exam eve
   let more=true;
   while(more){
     more=false;
     for(const c of courses){
       const q=byCourse[c]; if(!q.length) continue;
       const item=q.shift(); more=true;
-      // least-loaded day that still has room, tightest fit first (cap-safe); crunch-paused IIT defers (auto-carry)
-      const roomy=days.filter(d=>free(d)>=item.ch.minutes&&!heldFor(d.date,"iit"));
+      // least-loaded day with room on/before the course's exam eve; later days excluded
+      const roomy=days.filter(d=>free(d)>=item.ch.minutes&&dayIdx(d)<=cutoffFor(item.mod.course)&&!heldFor(d.date,"iit"));
       if(!roomy.length) continue; // nothing fits this week → stays undone, auto-carries to next week (never forced red)
       const target=roomy.slice().sort((a,b)=>iitLoad(a)-iitLoad(b)||free(a)-free(b))[0];
       target.tasks.push({ key:`iit:${item.mod.id}:${item.v.label}:${item.ch.label}`, title:"▶ "+item.ch.label, cat:"IIT", min:item.ch.minutes, pri:5, kind:"iit", tb:!!item.tb, modId:item.mod.id, vlabel:item.v.label, chunk:item.ch.label });
@@ -294,12 +339,6 @@ function buildWeek(offset){
     t.tasks.push({ key:`carry:${b.id}::${t.date}`, title:"↩ "+b.title, cat:b.cat, min:b.min, pri:b.pri, kind:"carry", bid:b.id });
   });
   // order: energy slots (warm-up → deep → NeetCode/CF late, never first) then priority
-  const SLOT={sai:1,saiw:1,custom:2,algo:2,dbms:2,test:2,focus:2,iit:2,book:2,nc:3,cf:3,cfcon:3,oss:4};
-  const slotOf=t=>{
-    if(t.kind==="rec") return SLOT[t.key.split("::")[1]]??2;
-    if(t.kind==="carry") return t.pri>=4?2:3;
-    return SLOT[t.kind]??2;
-  };
   days.forEach(d=>d.tasks.sort((a,b)=>slotOf(a)-slotOf(b)||b.pri-a.pri));
   return days;
 }
@@ -695,12 +734,16 @@ function pads(n){ return String(n).padStart(2,"0"); }
 
 function renderModules(){
   $("scraperSnippet").textContent=SCRAPER;
+  // where each video's sessions currently sit (Mon–Sun across this + next week)
+  const schedMap={};
+  [0,1].forEach(o=>{ try{ buildWeek(o).forEach(d=>d.tasks.forEach(t=>{ if(t.kind==="iit"&&!t.tb){ const k=t.modId+"||"+t.vlabel; (schedMap[k]=schedMap[k]||new Set()).add(d.wd+" "+d.date.slice(5)); } })); }catch(_){} });
+  const schedFor=(mid,label)=>{ const s=schedMap[mid+"||"+label]; return s?[...s].join(" · "):"queued →"; };
   $("moduleList").innerHTML=S.modules.length? [...S.modules].sort((a,b)=>a.week-b.week||(a.course<b.course?-1:1)).map(m=>{
     const tot=m.videos.reduce((a,v)=>a+v.minutes,0), dn=m.videos.filter(v=>v.done).length;
     const spd=S.speed||1, eff=Math.round(tot/spd), tb=(m.textbook ?? 30);
     if(m.week>triWeek()) return `<div class="mod" style="opacity:.65"><b>${m.course} · Week ${m.week}</b> ${m.title?"· "+m.title:""} — ${m.videos.length} videos · ${tot} min <span class="muted">🔒 releases ~${triWeekDate(m.week)} — auto-unlocks then</span></div>`;
     return `<div class="mod"><b>${m.course} · Week ${m.week}</b> ${m.title?"· "+m.title:""} — ${dn}/${m.videos.length} videos · ${tot} min raw (~${eff} at ${spd}×) + ${tb}m textbook
-      <div>${m.videos.map(v=>`<label style="display:block"><input type="checkbox" data-m="${m.id}" data-v="${v.label.replace(/"/g,"&quot;")}" ${v.done?"checked":""}> ${v.label} <span class="muted">(${v.minutes}m)</span></label>`).join("")}</div>
+      <div>${m.videos.map(v=>`<label style="display:block"><input type="checkbox" data-m="${m.id}" data-v="${v.label.replace(/"/g,"&quot;")}" ${v.done?"checked":""}> ${v.label} <span class="muted">(${v.minutes}m${v.done?" ✓":" · ▶ "+schedFor(m.id,v.label)})</span></label>`).join("")}</div>
       <div class="row wrap" style="margin-top:6px"><label class="small muted">📖 Textbook min/week <input type="number" min="0" max="300" step="5" value="${tb}" data-tb="${m.id}" style="width:75px"></label>
       <span style="flex:1"></span><button class="btn danger sm" data-delmod="${m.id}">Delete module</button></div></div>`;
   }).join("") : `<p class="muted small">No modules yet. Paste Week 1 for Java / Statistics / RDBMS to generate this week's IIT blocks.</p>`;
@@ -802,7 +845,7 @@ function renderTests(){
       ? `📝 SaiU · <b>${t.course}</b>${t.title?" — "+t.title:""}${t.time?` @${fmtTime(t.time)}`:""} <span class="muted">(${t.prepMode==="h"?t.qty+"h material":t.qty+" PYQs"} → ${t.prepMode==="h"?Math.round(t.qty*60):Math.round(t.qty*(t.perQ||4))}m prep)</span>`
       : `${t.type==="proctored"?"📝 Proctored":"📝 Non-Proctored"} · <b>${t.course}</b>${t.time?` @${fmtTime(t.time)}`:""}`;
     const slotNote=(t.sys!=="sai"&&t.type==="proctored")?(()=>{ const b=ptBackupDate({course:t.course,date:t.date,time:t.time}); return ` <span class="muted small">slot 1 ${t.date}${t.time?" "+fmtTime(t.time):""} → backup ${b.date}${b.time?" "+fmtTime(b.time):""}${t.movedToSlot2?" (moved ✓)":" (auto if missed)"}</span>`; })():"";
-    const p=t.sys==="sai"?"60m exam + auto-spread prep":(t.type==="proctored"?"120m exam + 90m + 60m prep":"60m exam + 45m prep");
+    const p=t.sys==="sai"?"60m exam + auto-spread prep":(t.type==="proctored"?"120m exam + 150m spread prep":"30m exam + 45m spread prep");
     return `<div class="mod"><b>${t.date}</b> · ${info} <span class="muted">(${p})</span>${slotNote} <button class="btn sm" data-crunch="${t.id}" title="toggle crunch for this test">${t.crunchOff?"⚡ crunch off":"⚡ crunch on"}</button> <button class="btn danger sm" data-deltest="${t.id}">✕</button></div>`;
   }).join("") : `<p class="muted small">No tests scheduled. Add your alternating IITG series or a SaiU class test below — prep blocks appear automatically on fixed dates.</p>`;
   $("testList").querySelectorAll("[data-deltest]").forEach(b=>b.onclick=()=>{ S.tests=S.tests.filter(t=>String(t.id)!==b.dataset.deltest); save(); renderAll(); });
@@ -817,8 +860,19 @@ function renderTests(){
    seeds are ~3rd-edition estimates); pace = remaining pages ÷ weeks to deadline. */
 /* Dated exam seeds: full PT/NPT trimester series. Runs once per version. */
 function seedTests(){
-  if(S.testVer>=3) return;
-  S.testSeeded=true; S.testFullSeeded=true; S.testVer=3;
+  if(S.testVer>=5) return;
+  S.testSeeded=true; S.testFullSeeded=true; S.testVer=5;
+  // official slot-B backups (constant per course): RDBMS Sat 19:30, Java Sat 20:30, Opt Sun 19:30
+  const SLOTB={RDBMS:{day:"Sat",time:"19:30"},Java:{day:"Sat",time:"20:30"},Optimization:{day:"Sun",time:"19:30"}};
+  S.ptBackup=S.ptBackup||{};
+  Object.keys(SLOTB).forEach(c=>{
+    const cur=S.ptBackup[c]||{};
+    if((!cur.day||cur.day==="Sat")&&!cur.time) S.ptBackup[c]={day:SLOTB[c].day,time:SLOTB[c].time};
+  });
+  // RDBMS PT1 slot-A Tue 08:00 (not 08:30)
+  (S.tests||[]).forEach(t=>{
+    if(t.course==="RDBMS"&&t.type==="proctored"&&t.date==="2026-09-15"&&t.time==="08:30"&&!t.movedToSlot2){ t.time="08:00"; }
+  });
   // correction: RDBMS PT1 is Tue Sep 15 (not Mon Sep 14) — migrate any existing seed entry
   (S.tests||[]).forEach(t=>{
     if(t.course==="RDBMS"&&t.type==="proctored"&&t.date==="2026-09-14"&&!t.movedToSlot2){ t.date="2026-09-15"; }
@@ -827,6 +881,12 @@ function seedTests(){
   const TUE_SHIFT={"2026-09-28":"2026-09-29","2026-10-12":"2026-10-13","2026-10-26":"2026-10-27","2026-11-09":"2026-11-10","2026-11-23":"2026-11-24"};
   (S.tests||[]).forEach(t=>{
     if(t.course==="RDBMS"&&t.type==="proctored"&&TUE_SHIFT[t.date]&&!t.movedToSlot2){ t.date=TUE_SHIFT[t.date]; }
+  });
+  // correction: pasted portal times for late-trimester evening slots (only where still the assumed 08:30)
+  const TIME_FIX={"Java|proctored|2026-10-26":"19:42","Java|proctored|2026-11-09":"19:42","Java|proctored|2026-11-23":"19:42","Optimization|proctored|2026-10-26":"20:52","Optimization|proctored|2026-11-09":"20:52","Optimization|proctored|2026-11-23":"20:52"};
+  (S.tests||[]).forEach(t=>{
+    const k=`${t.course}|${t.type}|${t.date}`;
+    if(TIME_FIX[k]&&t.time==="08:30"){ t.time=TIME_FIX[k]; }
   });
   let added=0;
   (typeof SEED_TESTS!=="undefined"?SEED_TESTS:[]).forEach(t=>{
@@ -1088,4 +1148,8 @@ function refreshIfNeeded(){
 }
 document.addEventListener("visibilitychange",()=>{ if(!document.hidden) refreshIfNeeded(); });
 window.addEventListener("focus",()=>refreshIfNeeded());
+// cross-tab sync: ticking in one tab updates every other open tab instantly
+window.addEventListener("storage",(e)=>{
+  if(e.key==="studyOS.v1"&&e.newValue){ try{ S=Object.assign(defState(),JSON.parse(e.newValue)); renderAll(); }catch(_){} }
+});
 setInterval(()=>{ if(todayStr()!==lastSeenDay){ lastSeenDay=todayStr(); autoRelocate(); renderAll(); } },60000);
