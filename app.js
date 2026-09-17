@@ -276,38 +276,38 @@ function buildWeek(offset){
   const dayTest={};
   const TEST_DAY_CAP=90;
   const claimedVid={};
-  function adoptFill(course, minutes){
-    // packs earliest undone lecture videos (whole videos only) into minutes; rest is revise/PYQ
-    const got=[], left={ m: minutes };
-    if(course&&course!=="All courses"){
-      const F=frontierMap(), spd=S.speed||1;
-      const cands=[];
-      S.modules.forEach(m=>{ if(m.week>triWeek()||F[m.course]!==m||m.course!==course) return;
-        m.videos.forEach(v=>{ if(!v.done&&!v.label.startsWith("📖")&&!claimedVid[m.id+"||"+v.label]) cands.push({mod:m,v}); }); });
-      for(const c of cands){
-        if(left.m<=0) break;
-        const vm=Math.max(5,Math.round(c.v.minutes/spd));
-        if(vm>left.m) continue; // too big for the leftover → revise fill instead (no splitting, no loss)
-        got.push(c); left.m-=vm;
-        claimedVid[c.mod.id+"||"+c.v.label]=1;
-      }
-    }
-    return { got, revise: Math.max(0, Math.round(left.m)) };
-  }
-  function prepTitle(ts, proctored, sess, adopted, reviseMin){
-    const tag=ts.sys==="sai"?"":` ${proctored?"PT":"NPT"}`;
-    const base=ts.sys==="sai"?`📝 SaiU prep (${ts.course}): ${saiPrepLabel(ts)}`:`📝 ${ts.course}${tag} prep → ${ts.date.slice(5)}`;
-    if(!adopted.length) return reviseMin>0?`${base}: revise + PYQs (${sess}m)`:`${base} (${sess}m)`;
-    return `${base}: “${adopted.map(c=>c.v.label.slice(0,42)).join("” + “")}”${reviseMin>0?` + revise (${reviseMin}m)`:""} (${sess}m)`;
-  }
   function placePrep(prefix, cat, ts, total, pri, label, adoptCourse){
     const win=[]; for(let k=5;k>=1;k--){ const dd=dstr(addD(parseD(ts.date),-k)); if(dd>=todayStr()&&byDate[dd]) win.push(byDate[dd]); }
-    const mkTask=(sess,i)=>{
-      const fill=adoptCourse?adoptFill(adoptCourse,sess):{got:[],revise:sess};
-      const adopted=fill.got, reviseMin=fill.revise;
-      return { title: adopted.length||reviseMin!==sess?prepTitle(ts,ts.type==="proctored",sess,adopted,reviseMin):label(sess,i),
-        vids: adopted.map(c=>({modId:c.mod.id,label:c.v.label})) };
-    };
+    const dayTestL=d=>(dayTest[d.date]||0);
+    if(adoptCourse&&adoptCourse!=="All courses"&&win.length){
+      // video-list mode: one tickable session per undone video (two-way synced),
+      // then a single revise remainder — no abstract blocks, no duplicates
+      const F=frontierMap(), spd=S.speed||1, cands=[];
+      S.modules.forEach(m=>{ if(m.week>triWeek()||F[m.course]!==m||m.course!==adoptCourse) return;
+        m.videos.forEach(v=>{ if(!v.done&&!v.label.startsWith("📖")&&!claimedVid[m.id+"||"+v.label]) cands.push({mod:m,v}); }); });
+      let rem=total, vi=0;
+      for(const c of cands){
+        if(rem<=0) break;
+        const vm=Math.max(5,Math.round(c.v.minutes/spd));
+        if(vm>rem) continue;
+        const tgt=win.slice().sort((a,b)=>dayTestL(a)-dayTestL(b))[0];
+        tgt.tasks.push({ key:`${prefix}:${ts.id}:prep${vi}`, title:`📝 ${adoptCourse} ${ts.type==="proctored"?"PT":"NPT"}: “${c.v.label.slice(0,60)}” (${vm}m)`, cat, min:vm, pri, kind:"test", fixed:true, vids:[{modId:c.mod.id,label:c.v.label}] });
+        claimedVid[c.mod.id+"||"+c.v.label]=1;
+        dayTest[tgt.date]=(dayTest[tgt.date]||0)+vm; rem-=vm; vi++;
+      }
+      if(rem>=10){
+        let g2=0;
+        while(rem>0&&g2<10){
+          const tgt=win.slice().sort((a,b)=>((dayTest[a.date]||0)-(dayTest[b.date]||0)))[0];
+          const rm=Math.min(60,Math.round(rem));
+          if(rm<10) break;
+          tgt.tasks.push({ key:`${prefix}:${ts.id}:prep${vi}`, title:`📝 ${adoptCourse} ${ts.type==="proctored"?"PT":"NPT"} prep: revise + PYQs (${rm}m)`, cat, min:rm, pri, kind:"test", fixed:true, vids:[] });
+          dayTest[tgt.date]=(dayTest[tgt.date]||0)+rm; rem-=rm; vi++; g2++;
+        }
+      }
+      return;
+    }
+    const mkTask=(sess,i)=>({ title:label(sess,i), vids:[] });
     if(!win.length){
       const hr=ts.time?+ts.time.split(":")[0]:99; // morning exam → no same-day cram; evening → cram OK
       if(byDate[ts.date]&&ts.date===todayStr()&&hr>=12){ const sess=Math.min(60,total); const t=mkTask(sess,0); byDate[ts.date].tasks.push({ key:`${prefix}:${ts.id}:prep0`, title:t.title, cat, min:sess, pri, kind:"test", fixed:true, vids:t.vids }); dayTest[ts.date]=(dayTest[ts.date]||0)+sess; }
