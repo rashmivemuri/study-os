@@ -169,21 +169,25 @@ function tonightTrim(day, nowD){
   return { budget:Math.round(Math.min(budget,1e6)), openMin, keepMin:acc, defer:open.filter(x=>!keep.has(x.key)) };
 }
 function applyTrim(){
-  const t=todayStr();
-  const day=buildWeek(weekOf(t)).find(d=>d.date===t); if(!day) return;
-  const plan=tonightTrim(day,new Date());
-  if(!plan||!plan.defer.length){ alert("Tonight already fits — nothing to trim."); return; }
-  let n=0;
-  plan.defer.forEach(x=>{
-    if(x.kind==="iit"&&!x.tb) return;
-    if(!carriesOver(x)) return;
-    if(S.backlog.some(b=>b.fromKey===x.key)) return;
-    S.backlog.push({ id:S.seq++, title:x.title, cat:x.cat, min:x.min, pri:x.pri, fromDate:t, fromKey:x.key, overdue:0 });
-    n++;
-  });
-  addLog(`Evening trim: kept ~${plan.keepMin}m of top priorities, moved ${n} to backlog`);
-  save(); renderAll();
+  try{
+    const t=todayStr();
+    const day=buildWeek(weekOf(t)).find(d=>d.date===t); if(!day) return;
+    const plan=tonightTrim(day,new Date());
+    if(!plan||!plan.defer.length){ alert("Tonight already fits — nothing to trim."); return; }
+    let n=0;
+    plan.defer.forEach(x=>{
+      if(x.kind==="iit"&&!x.tb) return;
+      if(!carriesOver(x)) return;
+      if(S.backlog.some(b=>b.fromKey===x.key)) return;
+      S.backlog.push({ id:S.seq++, title:x.title, cat:x.cat, min:x.min, pri:x.pri, fromDate:t, fromKey:x.key, overdue:0 });
+      n++;
+    });
+    addLog(`Evening trim: kept ~${plan.keepMin}m of top priorities, moved ${n} to backlog`);
+    save(); renderAll();
+    alert(`Trimmed for tonight: kept ~${plan.keepMin}m, moved ${n} to backlog. Reload-proof — check the log.`);
+  }catch(e){ alert("Trim failed ("+e.message+") — send me this exact text."); }
 }
+document.addEventListener("click",e=>{ if(e&&e.target&&e.target.id==="trimBtn"){ e.preventDefault(); applyTrim(); } });
 /* IIT-first governor: if frontier video demand outstrips free room this week,
    pause flex subjects (CF → Sai → weekend extras → NeetCode only in extremes)
    to fit MORE IIT. Pure arithmetic — no schedule building, no recursion. */
@@ -266,14 +270,47 @@ function buildWeek(offset){
   const byDate={}; days.forEach(d=>byDate[d.date]=d);
   const saiPrepMin=ts=>ts.prepMode==="h"?Math.round((+ts.qty||0)*60):Math.round((+ts.qty||0)*(+ts.perQ||4));
   const saiPrepLabel=ts=>ts.prepMode==="h"?`${ts.qty}h material (~${saiPrepMin(ts)}m)`:`${ts.qty} PYQs @${ts.perQ}m (~${saiPrepMin(ts)}m)`;
-  // shared test-prep balancer: all tests split a 90m/day prep budget, nearest exam first
+  // shared test-prep balancer: all tests split a 90m/day prep budget, nearest exam first.
+  // IITG course tests ADOPT real undone videos into their sessions (no abstract blocks,
+  // no double-booking: adopted videos skip the regular IIT queue that week).
   const dayTest={};
   const TEST_DAY_CAP=90;
-  function placePrep(prefix, cat, ts, total, pri, label){
+  const claimedVid={};
+  function adoptFill(course, minutes){
+    // packs earliest undone lecture videos (whole videos only) into minutes; rest is revise/PYQ
+    const got=[], left={ m: minutes };
+    if(course&&course!=="All courses"){
+      const F=frontierMap(), spd=S.speed||1;
+      const cands=[];
+      S.modules.forEach(m=>{ if(m.week>triWeek()||F[m.course]!==m||m.course!==course) return;
+        m.videos.forEach(v=>{ if(!v.done&&!v.label.startsWith("📖")&&!claimedVid[m.id+"||"+v.label]) cands.push({mod:m,v}); }); });
+      for(const c of cands){
+        if(left.m<=0) break;
+        const vm=Math.max(5,Math.round(c.v.minutes/spd));
+        if(vm>left.m) continue; // too big for the leftover → revise fill instead (no splitting, no loss)
+        got.push(c); left.m-=vm;
+        claimedVid[c.mod.id+"||"+c.v.label]=1;
+      }
+    }
+    return { got, revise: Math.max(0, Math.round(left.m)) };
+  }
+  function prepTitle(ts, proctored, sess, adopted, reviseMin){
+    const tag=ts.sys==="sai"?"":` ${proctored?"PT":"NPT"}`;
+    const base=ts.sys==="sai"?`📝 SaiU prep (${ts.course}): ${saiPrepLabel(ts)}`:`📝 ${ts.course}${tag} prep → ${ts.date.slice(5)}`;
+    if(!adopted.length) return reviseMin>0?`${base}: revise + PYQs (${sess}m)`:`${base} (${sess}m)`;
+    return `${base}: “${adopted.map(c=>c.v.label.slice(0,42)).join("” + “")}”${reviseMin>0?` + revise (${reviseMin}m)`:""} (${sess}m)`;
+  }
+  function placePrep(prefix, cat, ts, total, pri, label, adoptCourse){
     const win=[]; for(let k=5;k>=1;k--){ const dd=dstr(addD(parseD(ts.date),-k)); if(dd>=todayStr()&&byDate[dd]) win.push(byDate[dd]); }
+    const mkTask=(sess,i)=>{
+      const fill=adoptCourse?adoptFill(adoptCourse,sess):{got:[],revise:sess};
+      const adopted=fill.got, reviseMin=fill.revise;
+      return { title: adopted.length||reviseMin!==sess?prepTitle(ts,ts.type==="proctored",sess,adopted,reviseMin):label(sess,i),
+        vids: adopted.map(c=>({modId:c.mod.id,label:c.v.label})) };
+    };
     if(!win.length){
       const hr=ts.time?+ts.time.split(":")[0]:99; // morning exam → no same-day cram; evening → cram OK
-      if(byDate[ts.date]&&ts.date===todayStr()&&hr>=12){ const sess=Math.min(60,total); byDate[ts.date].tasks.push({ key:`${prefix}:${ts.id}:prep0`, title:label(sess,0), cat, min:sess, pri, kind:"test", fixed:true }); dayTest[ts.date]=(dayTest[ts.date]||0)+sess; }
+      if(byDate[ts.date]&&ts.date===todayStr()&&hr>=12){ const sess=Math.min(60,total); const t=mkTask(sess,0); byDate[ts.date].tasks.push({ key:`${prefix}:${ts.id}:prep0`, title:t.title, cat, min:sess, pri, kind:"test", fixed:true, vids:t.vids }); dayTest[ts.date]=(dayTest[ts.date]||0)+sess; }
       return;
     }
     const quota=Math.ceil(total/win.length);
@@ -283,14 +320,16 @@ function buildWeek(offset){
       const room=Math.max(0,TEST_DAY_CAP-(dayTest[d.date]||0));
       const sess=Math.min(60,quota,rem,room);
       if(sess<10) continue;
-      d.tasks.push({ key:`${prefix}:${ts.id}:prep${i}`, title:label(sess,i), cat, min:sess, pri, kind:"test", fixed:true });
+      const t=mkTask(sess,i);
+      d.tasks.push({ key:`${prefix}:${ts.id}:prep${i}`, title:t.title, cat, min:sess, pri, kind:"test", fixed:true, vids:t.vids });
       dayTest[d.date]=(dayTest[d.date]||0)+sess; rem-=sess; i++;
     }
     let g=0; // overflow: spread over least test-loaded window days (red but even — never silently dropped)
     while(rem>0&&g<10){
       const tgt=win.slice().sort((a,b)=>((dayTest[a.date]||0)-(dayTest[b.date]||0))||((b.cap-b.tasks.reduce((x,y)=>x+y.min,0))-(a.cap-a.tasks.reduce((x,y)=>x+y.min,0))))[0];
       const sess=Math.min(60,rem);
-      tgt.tasks.push({ key:`${prefix}:${ts.id}:prep${i}`, title:label(sess,i), cat, min:sess, pri, kind:"test", fixed:true });
+      const t=mkTask(sess,i);
+      tgt.tasks.push({ key:`${prefix}:${ts.id}:prep${i}`, title:t.title, cat, min:sess, pri, kind:"test", fixed:true, vids:t.vids });
       dayTest[tgt.date]=(dayTest[tgt.date]||0)+sess; rem-=sess; i++; g++;
     }
   }
@@ -303,8 +342,8 @@ function buildWeek(offset){
     const proctored=ts.type==="proctored";
     const at=ts.time?` (${fmtTime(ts.time)})`:"";
     if(byDate[ts.date]) byDate[ts.date].tasks.push({ key:`test:${ts.id}:exam`, title:`📝 ${proctored?"Proctored":"Non-Proctored"} test: ${ts.course}${at}`, cat:"IIT", min:proctored?120:30, pri:6, kind:"test", fixed:true });
-    // prep scales with distance-to-test: total spread over the immediate pre-days (≤60m/day)
-    placePrep("test","IIT",ts,proctored?150:45,proctored?6:5,(s,m)=>`📝 ${ts.course} ${proctored?"PT":"NPT"} prep → ${ts.date.slice(5)} (${s}m)`);
+    // prep scales with distance-to-test: total spread over the immediate pre-days (≤60m/day), naming real videos
+    placePrep("test","IIT",ts,proctored?150:45,proctored?6:5,(s,m)=>`📝 ${ts.course} ${proctored?"PT":"NPT"} prep → ${ts.date.slice(5)} (${s}m)`,ts.course==="All courses"?null:ts.course);
   });
   // 1c) calendar events: prep spread over the immediate pre-days (≤60m sessions, max 2/day)
   const loadOf=d=>d.tasks.reduce((a,t)=>a+t.min,0);
@@ -332,6 +371,7 @@ function buildWeek(offset){
   const frontier=frontierMap();
   iitVideosLeft().forEach(({mod,v})=>{
     if(frontier[mod.course]!==mod) return; // next module waits till this one is done
+    if(claimedVid[mod.id+"||"+v.label]) return; // adopted by test prep this week — no double-booking
     const key=mod.course+' W'+mod.week;
     (byCourse[key]=byCourse[key]||[]).push(...splitChunk(`${mod.course} W${mod.week}: ${v.label}`, effMin(v.minutes), 35).map(ch=>({mod,v,ch})));
   });
@@ -406,7 +446,7 @@ function toggleCheck(date,key,on){
 }
 function toggleIit(modId,vlabel,on){
   const mod=S.modules.find(m=>String(m.id)===String(modId)); if(!mod) return;
-  mod.videos.forEach(v=>{ if(v.label===vlabel) v.done=!!on; });
+  mod.videos.forEach(v=>{ if(v.label===vlabel){ v.done=!!on; v.doneAt=on?todayStr():null; } });
   autoRelocate();
   save(); renderAll();
 }
@@ -699,6 +739,30 @@ function runSelfTest(){
     res.push([(dissolves&&keeps)?"✓":"✗",`stale prep dissolves (full amount re-spreads), exam blocks still carry`]);
   }catch(e){ res.push(["✗","dissolve threw: "+e.message]); }
   try{
+    const m0=S.modules.find(m=>m.videos.some(v=>!v.done));
+    const v0=m0.videos.find(v=>!v.done);
+    toggleIit(m0.id,v0.label,true); // stamps doneAt=today
+    const stamped=v0.doneAt===todayStr();
+    const countsToday=iitDoneOn({modId:m0.id,vlabel:v0.label},todayStr());
+    const notElsewhere=!iitDoneOn({modId:m0.id,vlabel:v0.label},"2000-01-01");
+    const vdMin=vidsDoneMin(todayStr())>=v0.minutes;
+    toggleIit(m0.id,v0.label,false);
+    const undone=!iitDoneOn({modId:m0.id,vlabel:v0.label},todayStr());
+    res.push([(stamped&&countsToday&&notElsewhere&&vdMin&&undone)?"✓":"✗",`video dates: tick stamps ${todayStr()}, counts only that day in streak math`]);
+  }catch(e){ res.push(["✗","videodates threw: "+e.message]); }
+  try{
+    const monA=dstr(addD(monday(0),7));
+    S.tests.push({id:"__ad__",sys:"iitg",course:"Java",type:"proctored",date:monA,time:"08:00"});
+    const offsA=[...new Set([0,1,weekOf(monA)])];
+    const allA=offsA.flatMap(o=>buildWeek(o).flatMap(d=>d.tasks.map(t=>({t,date:d.date}))));
+    const pres=allA.filter(x=>x.t.key.indexOf("test:__ad__:prep")===0);
+    const adopted=new Set(); pres.forEach(x=>(x.t.vids||[]).forEach(v=>adopted.add(v.modId+"||"+v.label)));
+    const chunks=allA.filter(x=>x.t.kind==="iit"&&!x.t.tb).map(x=>x.t.modId+"||"+x.t.vlabel);
+    const doubleBooked=[...adopted].filter(k=>chunks.includes(k));
+    S.tests=S.tests.filter(t=>t.id!=="__ad__");
+    res.push([(pres.length>0&&adopted.size>0&&doubleBooked.length===0)?"✓":"✗",`prep adopts real videos (${adopted.size} named, ${pres.length} sessions), zero double-booking`]);
+  }catch(e){ res.push(["✗","adopt threw: "+e.message]); }
+  try{
     const p0=govPause().pause.slice();
     S.modules.push({id:"__g1__",course:"ZZ",week:triWeek(),title:"t",textbook:0,videos:[{label:"big",minutes:1200,done:false}]});
     const p1=govPause().pause;
@@ -752,7 +816,7 @@ function renderToday(){
     const carry=x.kind==="carry"?'<span class="badge carry">carryover</span>':"";
     const iit=x.kind==="iit"?'<span class="badge iit">IIT</span>':"";
     const test=x.kind==="test"?'<span class="badge testb">test</span>':"";
-    return { checked, html:`<li class="task ${checked?"done":""}"><span class="dot" style="background:${CATS[x.cat]||"#555"}"></span><input type="checkbox" data-d="${t}" data-k="${x.key.replace(/"/g,"&quot;")}" data-iit="${(x.kind==="iit"&&!x.tb)?x.modId+"||"+x.vlabel:""}" ${checked?"checked":""}>
+    return { checked, html:`<li class="task ${checked?"done":""}"><span class="dot" style="background:${CATS[x.cat]||"#555"}"></span><input type="checkbox" data-d="${t}" data-k="${x.key.replace(/"/g,"&quot;")}" data-iit="${(x.kind==="iit"&&!x.tb)?x.modId+"||"+x.vlabel:""}" data-pv="${(x.vids||[]).map(v=>v.modId+"||"+encodeURIComponent(v.label)).join(";")}" ${checked?"checked":""}>
       <div><div class="t">${x.title}</div><div class="meta">${x.min} min · P${x.pri} ${carry}${iit}${test}</div></div></li>` };
   };
   const rows=day.tasks.map(row);
@@ -761,7 +825,8 @@ function renderToday(){
     (shut.length?`<details class="donebox"><summary>Done (${shut.length}) — tap to review</summary><ul class="tasklist">${shut.map(r=>r.html).join("")}</ul></details>`:"")+
     (day.tasks.length?"":`<li class="muted small">Nothing scheduled — enjoy the breather.</li>`);
   $("todayList").querySelectorAll("input").forEach(cb=>cb.onchange=()=>{
-    if(cb.dataset.iit) toggleIit(cb.dataset.iit.split("||")[0], cb.dataset.iit.split("||")[1], cb.checked);
+    if(cb.dataset.pv){ cb.dataset.pv.split(";").filter(Boolean).forEach(r=>{ const ix=r.indexOf("||"); toggleIit(r.slice(0,ix),decodeURIComponent(r.slice(ix+2)),cb.checked); }); toggleCheck(cb.dataset.d,cb.dataset.k,cb.checked); }
+    else if(cb.dataset.iit) toggleIit(cb.dataset.iit.split("||")[0], cb.dataset.iit.split("||")[1], cb.checked);
     else toggleCheck(cb.dataset.d, cb.dataset.k, cb.checked);
   });
   // college banner (blocked hours today)
@@ -784,8 +849,7 @@ function renderToday(){
     const plan=tonightTrim(day,new Date());
     if(plan&&plan.defer.length>=2){
       const h=Math.floor(plan.budget/60), m=plan.budget%60;
-      $("trimBanner").innerHTML=`<div class="tip warnb">🌙 Only ~<b>${h}h${m?" "+m+"m":""}</b> left tonight for ${plan.openMin}m unticked — <b>focus on the top ~${plan.keepMin}m?</b> The rest defers smartly (SaiU/IITG → backlog, dailies lapse, videos auto-carry). <button id="trimBtn" class="btn sm primary">Trim tonight</button></div>`;
-      if($("trimBtn")) $("trimBtn").onclick=applyTrim;
+      $("trimBanner").innerHTML=`<div class="tip warnb">🌙 Only ~<b>${h}h${m?" "+m+"m":""}</b> left tonight for ${plan.openMin}m unticked — <b>focus on the top ~${plan.keepMin}m?</b> The rest defers smartly (SaiU/IITG → backlog, dailies lapse, videos auto-carry). <button id="trimBtn" type="button" class="btn sm primary">Trim tonight</button></div>`;
     } else $("trimBanner").innerHTML="";
   }
   // backlog (placed vs queued-for-later)
@@ -799,15 +863,18 @@ function renderToday(){
   $("backlogList").querySelectorAll("[data-del]").forEach(b=>b.onclick=()=>{ S.backlog=S.backlog.filter(x=>String(x.id)!==b.dataset.del); save(); renderAll(); });
   // stats
   $("streakNum").textContent=streak();
+  if($("streakNum")) $("streakNum").title="A day counts with ≥80% checklist done OR ≥45m of IIT videos ticked that day";
   $("weekPct").textContent=weekPct()+"%";
   $("iitLeft").textContent=iitVideosLeft().reduce((a,x)=>a+x.v.minutes,0)+"m";
   $("smartTip").innerHTML="<b>Smart tip:</b> "+tip(day);
   if($("reloLog")) $("reloLog").innerHTML=S.log.length? [...S.log].slice(-6).reverse().map(e=>`<li>• [${e.ts}] ${e.msg}</li>`).join("") : "<li>Nothing relocated yet — unfinished past-day tasks will appear here automatically.</li>";
 }
 function iitChunkDone(x){ const mod=S.modules.find(m=>String(m.id)===String(x.modId)); if(!mod) return false; const v=mod.videos.find(v=>v.label===x.vlabel); return !!(v&&v.done); }
+/* Was this video finished ON the given date? (null doneAt = ticked before tracking began → counts always.) */
+function iitDoneOn(x,date){ const mod=S.modules.find(m=>String(m.id)===String(x.modId)); if(!mod) return false; const v=mod.videos.find(v=>v.label===x.vlabel); if(!(v&&v.done)) return false; return !v.doneAt||v.doneAt===date; }
 /* Unified done-state: textbook chunks tick via normal checks; video chunks via video flags. */
 function taskDone(date,x){
-  if(x.kind==="iit"&&!x.tb) return iitChunkDone(x);
+  if(x.kind==="iit"&&!x.tb) return iitDoneOn(x,date);
   return isDone(date,x.key);
 }
 function lowestPri(day){ const s=[...day.tasks].sort((a,b)=>a.pri-b.pri); return s.length?s[0].title:"—"; }
@@ -822,12 +889,14 @@ function tip(day){
   const nc=neetcodePace(); return `NeetCode pace: ${nc.done}/150 assumed tracked externally — solve ${nc.perWeek}/wk to finish this sem (~16 wks). Keep the daily 45-min streak even on bad days.`;
 }
 function neetcodePace(){ return { done: S.ncDone||0, perWeek: Math.ceil((150-(S.ncDone||0))/16) }; }
+/* Minutes of IIT videos finished ON a given date (completion stamps). */
+function vidsDoneMin(d){ let mm=0; (S.modules||[]).forEach(mo=>mo.videos.forEach(v=>{ if(v.done&&v.doneAt===d) mm+=v.minutes; })); return mm; }
 function streak(){
   let s=0; for(let i=0;i<60;i++){ const d=dstr(addD(new Date(),-i));
     const off=weekOf(d), days=buildWeek(off), day=days.find(x=>x.date===d); if(!day) break;
     if(!day.tasks.length) continue;
     const dn=day.tasks.filter(x=>taskDone(d,x)).length;
-    if(dn/day.tasks.length>=0.8) s++; else if(i===0) continue; else break;
+    if(dn/day.tasks.length>=0.8||vidsDoneMin(d)>=45) s++; else if(i===0) continue; else break;
   } return s;
 }
 function weekPct(){
@@ -871,7 +940,7 @@ function renderModules(){
     const isFrontier=(FM[m.course]===m);
     const flow=dn===m.videos.length?`<span style="color:var(--ok)">✓ done</span>`:isFrontier?`<span style="color:var(--teal)">▶ active — finish this to unlock Week ${m.week+1}</span>`:`<span class="muted">⏳ waits for Week ${FM[m.course]?FM[m.course].week:"?"}</span>`;
     return `<div class="mod"><b>${m.course} · Week ${m.week}</b> ${m.title?"· "+m.title:""} — ${dn}/${m.videos.length} videos · ${tot} min raw (~${eff} at ${spd}×) + ${tb}m textbook<br>${flow}
-      <div>${m.videos.map(v=>`<label style="display:block"><input type="checkbox" data-m="${m.id}" data-v="${v.label.replace(/"/g,"&quot;")}" ${v.done?"checked":""}> ${v.label} <span class="muted">(${v.minutes}m${v.done?" ✓":" · ▶ "+schedFor(m.id,v.label)})</span></label>`).join("")}</div>
+      <div>${m.videos.map(v=>`<label style="display:block"><input type="checkbox" data-m="${m.id}" data-v="${v.label.replace(/"/g,"&quot;")}" ${v.done?"checked":""}> ${v.label} <span class="muted">(${v.minutes}m${v.done?(v.doneAt?" ✓ "+v.doneAt.slice(5):" ✓"):" · ▶ "+schedFor(m.id,v.label)})</span></label>`).join("")}</div>
       <div class="row wrap" style="margin-top:6px"><label class="small muted">📖 Textbook min/week <input type="number" min="0" max="300" step="5" value="${tb}" data-tb="${m.id}" style="width:75px"></label>
       <span style="flex:1"></span><button class="btn danger sm" data-delmod="${m.id}">Delete module</button></div></div>`;
   }).join("") : `<p class="muted small">No modules yet. Paste Week 1 for Java / Statistics / RDBMS to generate this week's IIT blocks.</p>`;
@@ -1092,13 +1161,13 @@ function renderSettings(){
 function seedWeek1(){
   if(S.seedVer>=2) return;
   const doneByLabel={};
-  (S.modules||[]).forEach(m=>(m.videos||[]).forEach(v=>{ if(v.done) doneByLabel[m.course+"||"+v.label]=1; }));
+  (S.modules||[]).forEach(m=>(m.videos||[]).forEach(v=>{ if(v.done) doneByLabel[m.course+"||"+v.label]={at:v.doneAt||null}; }));
   S.modules=(S.modules||[]).filter(m=>!m.seed);
   const list=(typeof SEED_MODULES!=="undefined"?SEED_MODULES:[]);
   list.forEach(sm=>{
     if(S.modules.some(x=>x.course===sm.course&&String(x.week)===String(sm.week))) return;
     S.modules.push({ id:S.seq++, course:sm.course, week:sm.week, title:sm.title, seed:true, textbook:30,
-      videos: sm.videos.map(r=>({ label:r[0], minutes:r[1], done:!!doneByLabel[sm.course+"||"+r[0]] })) });
+      videos: sm.videos.map(r=>{ const k=doneByLabel[sm.course+"||"+r[0]]; return { label:r[0], minutes:r[1], done:!!k, doneAt:k?k.at:null }; }) });
   });
   S.seeded=true; S.seedVer=2;
   addLog(`Loaded full trimester dataset (${list.length} modules) — future weeks unlock automatically`);
@@ -1160,9 +1229,9 @@ $("mSave").onclick=()=>{
   const ex=S.modules.find(m=>m.course===$("mCourse").value&&String(m.week)===$("mWeek").value);
   if(ex){
     if(!confirm(`${ex.course} Week ${ex.week} already exists — replace it with this paste? (ticks kept where titles match)`)) return;
-    const done={}; ex.videos.forEach(v=>{ if(v.done)done[v.label]=1; });
+    const done={}; ex.videos.forEach(v=>{ if(v.done)done[v.label]=v.doneAt||null; });
     ex.title=$("mTitle").value.trim()||ex.title;
-    ex.videos=items.map(x=>({label:x.label.slice(0,80),minutes:x.minutes,done:!!done[x.label.slice(0,80)]}));
+    ex.videos=items.map(x=>{ const lb=x.label.slice(0,80); return {label:lb,minutes:x.minutes,done:lb in done,doneAt:done[lb]||null}; });
     $("mPaste").value=""; $("mTitle").value=""; save(); renderAll();
     alert("Module replaced — schedule rebuilt.");
     return;
