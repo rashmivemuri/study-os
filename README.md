@@ -16,7 +16,7 @@ Local-first planner. Double-click `index.html` (or serve with `python -m http.se
 ## What it does
 - **Today tab**: daily checklist with progress, overload warning, backlog queue, streak + week stats, smart tip, quick-add.
 - **Week tab**: Mon–Sun auto-schedule. Recurring load placed first, IIT video chunks poured into freest days (≤50-min splits), backlog fitted into leftover slots (max 2/day, most-overdue first). Red = overloaded.
-- **IIT Modules tab**: paste each week's video list per course (Java / Statistics / RDBMS). Parser accepts `mm:ss`, `h:mm:ss`, `12 min`, `1h 20m`, one per line. Includes a Coursera console snippet to semi-auto copy durations.
+- **IIT Modules tab**: full trimester dataset with release gating + sequential frontier (finish a module to unlock the next) + per-video scheduled-day badges + **search box to find any video instantly**. Parser accepts `mm:ss`, `h:mm:ss`, `12 min`, `1h 20m`. Test prep sessions name real videos (one tickable session each + a single revise remainder, two-way synced, never double-booked).
 - **Goals tab**: hardcoded short / mid / long-term goals from your list.
 - **Settings**: daily self-study capacity (default 300 wkday / 420 wkend mins). Scheduler rebuilds automatically.
 

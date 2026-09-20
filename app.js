@@ -296,14 +296,11 @@ function buildWeek(offset){
         dayTest[tgt.date]=(dayTest[tgt.date]||0)+vm; rem-=vm; vi++;
       }
       if(rem>=10){
-        let g2=0;
-        while(rem>0&&g2<10){
-          const tgt=win.slice().sort((a,b)=>((dayTest[a.date]||0)-(dayTest[b.date]||0)))[0];
-          const rm=Math.min(60,Math.round(rem));
-          if(rm<10) break;
-          tgt.tasks.push({ key:`${prefix}:${ts.id}:prep${vi}`, title:`📝 ${adoptCourse} ${ts.type==="proctored"?"PT":"NPT"} prep: revise + PYQs (${rm}m)`, cat, min:rm, pri, kind:"test", fixed:true, vids:[] });
-          dayTest[tgt.date]=(dayTest[tgt.date]||0)+rm; rem-=rm; vi++; g2++;
-        }
+        // exactly one revise session per test — never manufacture phantom blocks
+        const tgt=win.slice().sort((a,b)=>((dayTest[a.date]||0)-(dayTest[b.date]||0)))[0];
+        const rm=Math.min(60,Math.round(rem));
+        tgt.tasks.push({ key:`${prefix}:${ts.id}:prep${vi}`, title:`📝 ${adoptCourse} ${ts.type==="proctored"?"PT":"NPT"} prep: revise + PYQs (${rm}m)`, cat, min:rm, pri, kind:"test", fixed:true, vids:[] });
+        dayTest[tgt.date]=(dayTest[tgt.date]||0)+rm;
       }
       return;
     }
@@ -624,8 +621,9 @@ function runSelfTest(){
     const preps=allT.filter(x=>x.t.key.indexOf("test:__tt__:prep")===0);
     const nPrep=preps.reduce((a,x)=>a+x.t.min,0);
     const preOk=preps.length>0&&preps.every(x=>x.date<monF)&&preps.every(x=>x.t.min<=60);
+    const oneRevise=preps.filter(x=>x.t.title.indexOf("revise + PYQs")>-1).length<=1;
     S.tests=S.tests.filter(t=>t.id!=="__tt__");
-    res.push([(hasExam&&nPrep===150&&preOk)?"✓":"✗",`tests: 120m exam + 150m prep spread pre-date in ≤60m sessions (${nPrep}m over ${preps.length} days)`]);
+    res.push([(hasExam&&nPrep>0&&nPrep<=150&&preOk&&oneRevise)?"✓":"✗",`tests: 120m exam + video sessions + single revise (${nPrep}m over ${preps.length} sessions, all pre-date ≤60m)`]);
   }catch(e){ res.push(["✗","tests threw: "+e.message]); }
   try{
     const n1=S.backlog.length; autoRelocate(); const n2=S.backlog.length; autoRelocate(); const n3=S.backlog.length;
@@ -727,9 +725,9 @@ function runSelfTest(){
     const items=offs.flatMap(o=>buildWeek(o).flatMap(d=>d.tasks.map(t=>({t,date:d.date}))));
     const examOk=items.some(x=>x.t.key==="test:__sup__:exam"&&x.t.min===120);
     const pr=items.filter(x=>x.t.key.indexOf("test:__sup__:prep")===0);
-    const prepOk=pr.reduce((a,x)=>a+x.t.min,0)===150&&pr.every(x=>x.date<monF);
+    const prepOk=pr.length>0&&pr.reduce((a,x)=>a+x.t.min,0)<=150&&pr.every(x=>x.date<monF)&&pr.every(x=>x.t.min<=60);
     S.tests=S.tests.filter(t=>t.id!=="__sup__"); S.backlog=snapBT;
-    res.push([(examOk&&prepOk)?"✓":"✗",`test supremacy: 120m exam + full 150m prep survive a flooded week, pre-dated`]);
+    res.push([(examOk&&prepOk)?"✓":"✗",`test supremacy: 120m exam + video-list prep survive a flooded week, pre-dated`]);
   }catch(e){ res.push(["✗","supremacy threw: "+e.message]); }
   try{
     S.tests.push({id:"__d__",sys:"iitg",course:"RDBMS",type:"proctored",date:dstr(addD(parseD(todayStr()),2))});
@@ -935,12 +933,15 @@ function renderModules(){
   $("moduleList").innerHTML=S.modules.length? [...S.modules].sort((a,b)=>a.week-b.week||(a.course<b.course?-1:1)).map(m=>{
     const tot=m.videos.reduce((a,v)=>a+v.minutes,0), dn=m.videos.filter(v=>v.done).length;
     const spd=S.speed||1, eff=Math.round(tot/spd), tb=(m.textbook ?? 30);
-    if(m.week>triWeek()) return `<div class="mod" style="opacity:.65"><b>${m.course} · Week ${m.week}</b> ${m.title?"· "+m.title:""} — ${m.videos.length} videos · ${tot} min <span class="muted">🔒 releases ~${triWeekDate(m.week)} — auto-unlocks then</span></div>`;
+    const q=(($("modSearch")&&$("modSearch").value)||"").trim().toLowerCase();
+    const shown=q?m.videos.filter(v=>v.label.toLowerCase().indexOf(q)>-1):m.videos;
+    if(q&&!shown.length) return "";
+    if(m.week>triWeek()) return `<div class="mod" style="opacity:.65"><b>${m.course} · Week ${m.week}</b> ${m.title?"· "+m.title:""} — ${m.videos.length} videos · ${tot} min <span class="muted">🔒 releases ~${triWeekDate(m.week)} — auto-unlocks then</span>${q?`<div>${shown.map(v=>`<div class="small">⊘ ${v.label} <span class="muted">(${v.minutes}m)</span></div>`).join("")}</div>`:""}</div>`;
     const FM=frontierMap();
     const isFrontier=(FM[m.course]===m);
     const flow=dn===m.videos.length?`<span style="color:var(--ok)">✓ done</span>`:isFrontier?`<span style="color:var(--teal)">▶ active — finish this to unlock Week ${m.week+1}</span>`:`<span class="muted">⏳ waits for Week ${FM[m.course]?FM[m.course].week:"?"}</span>`;
     return `<div class="mod"><b>${m.course} · Week ${m.week}</b> ${m.title?"· "+m.title:""} — ${dn}/${m.videos.length} videos · ${tot} min raw (~${eff} at ${spd}×) + ${tb}m textbook<br>${flow}
-      <div>${m.videos.map(v=>`<label style="display:block"><input type="checkbox" data-m="${m.id}" data-v="${v.label.replace(/"/g,"&quot;")}" ${v.done?"checked":""}> ${v.label} <span class="muted">(${v.minutes}m${v.done?(v.doneAt?" ✓ "+v.doneAt.slice(5):" ✓"):" · ▶ "+schedFor(m.id,v.label)})</span></label>`).join("")}</div>
+      <div>${(q?shown:m.videos).map(v=>`<label style="display:block"><input type="checkbox" data-m="${m.id}" data-v="${v.label.replace(/"/g,"&quot;")}" ${v.done?"checked":""}> ${v.label} <span class="muted">(${v.minutes}m${v.done?(v.doneAt?" ✓ "+v.doneAt.slice(5):" ✓"):" · ▶ "+schedFor(m.id,v.label)})</span></label>`).join("")}</div>
       <div class="row wrap" style="margin-top:6px"><label class="small muted">📖 Textbook min/week <input type="number" min="0" max="300" step="5" value="${tb}" data-tb="${m.id}" style="width:75px"></label>
       <span style="flex:1"></span><button class="btn danger sm" data-delmod="${m.id}">Delete module</button></div></div>`;
   }).join("") : `<p class="muted small">No modules yet. Paste Week 1 for Java / Statistics / RDBMS to generate this week's IIT blocks.</p>`;
@@ -1242,6 +1243,7 @@ $("mSave").onclick=()=>{
   alert("Module saved — IIT chunks auto-spread into your week's free slots. See Week tab.");
 };
 $("copySnippet").onclick=async()=>{ try{ await navigator.clipboard.writeText(SCRAPER); alert("Snippet copied. Paste it in the Coursera console."); }catch{ alert("Copy failed — select the code manually."); } };
+if($("modSearch")) $("modSearch").oninput=()=>renderModules();
 $("qaAdd").onclick=()=>{
   const t=$("qaTitle").value.trim(); if(!t){alert("Give the task a title.");return;}
   S.custom.push({ id:S.seq++, title:t, date:$("qaDate").value||todayStr(), min:+$("qaMin").value||60, cat:"SAI", pri:4 });
