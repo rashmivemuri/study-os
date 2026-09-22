@@ -294,30 +294,36 @@ function buildWeek(offset){
       vi++;
     };
     if(adoptCourse&&adoptCourse!=="All courses"){
-      // video sessions first (named, tickable, two-way synced), then ONE revise session
+      // video sessions (named, tickable, two-way synced) on days near the exam only,
+      // then ONE revise session — daily IIT flow keeps unclaimed videos until then
       const F=frontierMap(), spd=S.speed||1, cands=[];
       S.modules.forEach(m=>{ if(m.week>triWeek()||F[m.course]!==m||m.course!==adoptCourse) return;
         m.videos.forEach(v=>{ if(!v.done&&!v.label.startsWith("📖")&&!claimedVid[m.id+"||"+v.label]) cands.push({mod:m,v}); }); });
-      let rem=total, adoptedSum=0;
-      for(const dd of useDays){
-        if(rem<=0) break;
-        const sess=Math.min(60,quota,rem);
-        const mine=[]; let used=0;
-        for(const c of cands){
-          if(mine.length>=4) break;
-          const key=c.mod.id+"||"+c.v.label;
-          if(claimedVid[key]) continue;
-          const vm=Math.max(5,Math.round(c.v.minutes/spd));
-          if(used+vm>sess||adoptedSum+vm>total) continue;
-          mine.push({c,vm}); used+=vm; adoptedSum+=vm; claimedVid[key]=1;
-        }
-        if(!mine.length) continue; // no videos fit here — revise below covers the balance
-        put(dd,sess,`📝 ${adoptCourse} ${tag} prep → ${ts.date.slice(5)}: “${mine.map(x=>x.c.v.label.slice(0,42)).join("” + “")}” (${sess}m)`,mine.map(x=>({modId:x.c.mod.id,label:x.c.v.label})));
-        rem-=sess;
+      const horizon=dstr(addD(parseD(ts.date),-3));
+      let near=useDays.filter(dd=>dd>=horizon);
+      if(!near.length) near=useDays.slice(-1);
+      const tag=ts.sys==="sai"?"":` ${ts.type==="proctored"?"PT":"NPT"}`;
+      let vi=0, adoptedSum=0, di=0;
+      const groups=[];
+      let cur={mine:[],used:0};
+      for(const c of cands){
+        if(adoptedSum>=total) break;
+        const vm=Math.max(5,Math.round(c.v.minutes/spd));
+        if(vm>30||adoptedSum+vm>total) continue; // oversized stays queued; never exceed the plan
+        if(cur.mine.length>=3||cur.used+vm>30){ if(cur.mine.length) groups.push(cur); cur={mine:[],used:0}; }
+        const key=c.mod.id+"||"+c.v.label;
+        cur.mine.push({c,vm}); cur.used+=vm; adoptedSum+=vm; claimedVid[key]=1;
+      }
+      if(cur.mine.length) groups.push(cur);
+      for(const g of groups){
+        const dd=near[di%near.length]; di++;
+        const d=byDate[dd]; if(!d) continue;
+        d.tasks.push({ key:`${prefix}:${ts.id}:prep${vi}`, title:`📝 ${adoptCourse} ${tag} prep → ${ts.date.slice(5)}: “${g.mine.map(x=>x.c.v.label.slice(0,42)).join("” + “")}” (${g.used}m)`, cat, min:g.used, pri, kind:"test", fixed:true, vids:g.mine.map(x=>({modId:x.c.mod.id,label:x.c.v.label})) });
+        vi++;
       }
       const revise=Math.min(60,Math.round(total-adoptedSum));
       if(revise>=10){
-        const dd=useDays[useDays.length-1];
+        const dd=near[near.length-1];
         const d=byDate[dd];
         if(d) d.tasks.push({ key:`${prefix}:${ts.id}:prep${vi}`, title:`📝 ${adoptCourse} ${tag} prep: revise + PYQs (${revise}m)`, cat, min:revise, pri, kind:"test", fixed:true, vids:[] });
       }
