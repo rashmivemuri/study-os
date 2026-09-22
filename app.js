@@ -271,63 +271,73 @@ function buildWeek(offset){
   const saiPrepMin=ts=>ts.prepMode==="h"?Math.round((+ts.qty||0)*60):Math.round((+ts.qty||0)*(+ts.perQ||4));
   const saiPrepLabel=ts=>ts.prepMode==="h"?`${ts.qty}h material (~${saiPrepMin(ts)}m)`:`${ts.qty} PYQs @${ts.perQ}m (~${saiPrepMin(ts)}m)`;
   // shared test-prep balancer: all tests split a 90m/day prep budget, nearest exam first.
-  // IITG course tests ADOPT real undone videos into their sessions (no abstract blocks,
-  // no double-booking: adopted videos skip the regular IIT queue that week).
-  const dayTest={};
-  const TEST_DAY_CAP=90;
-  const claimedVid={};
+  // IITG course tests ADOPT real undone videos into their sessions (no abstract blocks).
+  // claimedVid is render-scoped (RENDERCLAIM): every week-view built during one render
+  // sees the same claims, so cross-week views can neither double-book nor drop videos.
+  const claimedVid = RENDERCLAIM || {};
+  function fullWin(ts,back){ const w=[]; for(let k=back;k>=1;k--){ const dd=dstr(addD(parseD(ts.date),-k)); if(dd>=todayStr()) w.push(dd); } return w; }
   function placePrep(prefix, cat, ts, total, pri, label, adoptCourse){
-    const win=[]; for(let k=5;k>=1;k--){ const dd=dstr(addD(parseD(ts.date),-k)); if(dd>=todayStr()&&byDate[dd]) win.push(byDate[dd]); }
-    const dayTestL=d=>(dayTest[d.date]||0);
-    if(adoptCourse&&adoptCourse!=="All courses"&&win.length){
-      // video-list mode: one tickable session per undone video (two-way synced),
-      // then a single revise remainder — no abstract blocks, no duplicates
+    const full=fullWin(ts,5);
+    if(!full.length){
+      const hr=ts.time?+ts.time.split(":")[0]:99; // morning exam → no same-day cram; evening → cram OK
+      if(byDate[ts.date]&&ts.date===todayStr()&&hr>=12){ const sess=Math.min(60,total); const t=mkTask(sess,0); byDate[ts.date].tasks.push({ key:`${prefix}:${ts.id}:prep0`, title:t.title, cat, min:sess, pri, kind:"test", fixed:true, vids:t.vids }); }
+      return;
+    }
+    const ndays=Math.max(1,Math.min(full.length,Math.round(total/40)));
+    const useDays=full.slice(-ndays);
+    const quota=Math.ceil(total/useDays.length);
+    const tag=ts.sys==="sai"?"":` ${ts.type==="proctored"?"PT":"NPT"}`;
+    let vi=0;
+    const put=(date,sess,title,vids)=>{
+      const d=byDate[date]; if(!d) return;
+      d.tasks.push({ key:`${prefix}:${ts.id}:prep${vi}`, title, cat, min:sess, pri, kind:"test", fixed:true, vids });
+      vi++;
+    };
+    if(adoptCourse&&adoptCourse!=="All courses"){
+      // video sessions first (named, tickable, two-way synced), then ONE revise session
       const F=frontierMap(), spd=S.speed||1, cands=[];
       S.modules.forEach(m=>{ if(m.week>triWeek()||F[m.course]!==m||m.course!==adoptCourse) return;
         m.videos.forEach(v=>{ if(!v.done&&!v.label.startsWith("📖")&&!claimedVid[m.id+"||"+v.label]) cands.push({mod:m,v}); }); });
-      let rem=total, vi=0;
-      for(const c of cands){
+      let rem=total, adoptedSum=0;
+      for(const dd of useDays){
         if(rem<=0) break;
-        const vm=Math.max(5,Math.round(c.v.minutes/spd));
-        if(vm>rem) continue;
-        const tgt=win.slice().sort((a,b)=>dayTestL(a)-dayTestL(b))[0];
-        tgt.tasks.push({ key:`${prefix}:${ts.id}:prep${vi}`, title:`📝 ${adoptCourse} ${ts.type==="proctored"?"PT":"NPT"}: “${c.v.label.slice(0,60)}” (${vm}m)`, cat, min:vm, pri, kind:"test", fixed:true, vids:[{modId:c.mod.id,label:c.v.label}] });
-        claimedVid[c.mod.id+"||"+c.v.label]=1;
-        dayTest[tgt.date]=(dayTest[tgt.date]||0)+vm; rem-=vm; vi++;
+        const sess=Math.min(60,quota,rem);
+        const mine=[]; let used=0;
+        for(const c of cands){
+          if(mine.length>=4) break;
+          const key=c.mod.id+"||"+c.v.label;
+          if(claimedVid[key]) continue;
+          const vm=Math.max(5,Math.round(c.v.minutes/spd));
+          if(used+vm>sess||adoptedSum+vm>total) continue;
+          mine.push({c,vm}); used+=vm; adoptedSum+=vm; claimedVid[key]=1;
+        }
+        if(!mine.length) continue; // no videos fit here — revise below covers the balance
+        put(dd,sess,`📝 ${adoptCourse} ${tag} prep → ${ts.date.slice(5)}: “${mine.map(x=>x.c.v.label.slice(0,42)).join("” + “")}” (${sess}m)`,mine.map(x=>({modId:x.c.mod.id,label:x.c.v.label})));
+        rem-=sess;
       }
-      if(rem>=10){
-        // exactly one revise session per test — never manufacture phantom blocks
-        const tgt=win.slice().sort((a,b)=>((dayTest[a.date]||0)-(dayTest[b.date]||0)))[0];
-        const rm=Math.min(60,Math.round(rem));
-        tgt.tasks.push({ key:`${prefix}:${ts.id}:prep${vi}`, title:`📝 ${adoptCourse} ${ts.type==="proctored"?"PT":"NPT"} prep: revise + PYQs (${rm}m)`, cat, min:rm, pri, kind:"test", fixed:true, vids:[] });
-        dayTest[tgt.date]=(dayTest[tgt.date]||0)+rm;
+      const revise=Math.min(60,Math.round(total-adoptedSum));
+      if(revise>=10){
+        const dd=useDays[useDays.length-1];
+        const d=byDate[dd];
+        if(d) d.tasks.push({ key:`${prefix}:${ts.id}:prep${vi}`, title:`📝 ${adoptCourse} ${tag} prep: revise + PYQs (${revise}m)`, cat, min:revise, pri, kind:"test", fixed:true, vids:[] });
       }
       return;
     }
     const mkTask=(sess,i)=>({ title:label(sess,i), vids:[] });
-    if(!win.length){
-      const hr=ts.time?+ts.time.split(":")[0]:99; // morning exam → no same-day cram; evening → cram OK
-      if(byDate[ts.date]&&ts.date===todayStr()&&hr>=12){ const sess=Math.min(60,total); const t=mkTask(sess,0); byDate[ts.date].tasks.push({ key:`${prefix}:${ts.id}:prep0`, title:t.title, cat, min:sess, pri, kind:"test", fixed:true, vids:t.vids }); dayTest[ts.date]=(dayTest[ts.date]||0)+sess; }
-      return;
-    }
-    const quota=Math.ceil(total/win.length);
-    let rem=total, i=0;
-    for(const d of win){
+    let rem=total, i=0, g=0;
+    for(const dd of useDays){
       if(rem<=0) break;
-      const room=Math.max(0,TEST_DAY_CAP-(dayTest[d.date]||0));
-      const sess=Math.min(60,quota,rem,room);
-      if(sess<10) continue;
+      const sess=Math.min(60,quota,rem);
       const t=mkTask(sess,i);
-      d.tasks.push({ key:`${prefix}:${ts.id}:prep${i}`, title:t.title, cat, min:sess, pri, kind:"test", fixed:true, vids:t.vids });
-      dayTest[d.date]=(dayTest[d.date]||0)+sess; rem-=sess; i++;
+      put(dd,sess,t.title,t.vids);
+      rem-=sess; i++;
     }
-    let g=0; // overflow: spread over least test-loaded window days (red but even — never silently dropped)
-    while(rem>0&&g<10){
-      const tgt=win.slice().sort((a,b)=>((dayTest[a.date]||0)-(dayTest[b.date]||0))||((b.cap-b.tasks.reduce((x,y)=>x+y.min,0))-(a.cap-a.tasks.reduce((x,y)=>x+y.min,0))))[0];
+    while(rem>0&&g<12){ // overflow cycles the same days (deterministic) — heavy plans show red honestly
+      const dd=useDays[g%useDays.length];
       const sess=Math.min(60,rem);
       const t=mkTask(sess,i);
-      tgt.tasks.push({ key:`${prefix}:${ts.id}:prep${i}`, title:t.title, cat, min:sess, pri, kind:"test", fixed:true, vids:t.vids });
-      dayTest[tgt.date]=(dayTest[tgt.date]||0)+sess; rem-=sess; i++; g++;
+      put(dd,sess,t.title,t.vids);
+      rem-=sess; i++; g++;
     }
   }
   [...(S.tests||[])].sort((a,b)=>a.date<b.date?-1:1).forEach(ts=>{
@@ -342,21 +352,21 @@ function buildWeek(offset){
     // prep scales with distance-to-test: total spread over the immediate pre-days (≤60m/day), naming real videos
     placePrep("test","IIT",ts,proctored?150:45,proctored?6:5,(s,m)=>`📝 ${ts.course} ${proctored?"PT":"NPT"} prep → ${ts.date.slice(5)} (${s}m)`,ts.course==="All courses"?null:ts.course);
   });
-  // 1c) calendar events: prep spread over the immediate pre-days (≤60m sessions, max 2/day)
-  const loadOf=d=>d.tasks.reduce((a,t)=>a+t.min,0);
+  // 1c) calendar events: deterministic prep over the full 7-day window (same every build)
   (S.events||[]).forEach(ev=>{
     if(ev.done) return;
-    let rem=Math.round((+ev.estHrs||0)*60); if(rem<=0) return;
-    const win=[]; for(let k=7;k>=1;k--){ const dd=dstr(addD(parseD(ev.date),-k)); if(dd>=todayStr()&&byDate[dd]) win.push(byDate[dd]); }
-    if(!win.length) return; // too far out for this view — appears as its week arrives
-    let i=0, g=0;
-    while(rem>0&&g<28){
-      const cands=win.filter(d=>d.tasks.filter(t=>t.kind==="focus"&&t.eid===ev.id).length<2);
-      if(!cands.length) break;
-      const tgt=cands.slice().sort((a,b)=>loadOf(a)-loadOf(b))[0];
-      const sess=Math.min(60,rem);
-      tgt.tasks.push({ key:`focus:${ev.id}:${i}`, title:`🎯 ${ev.title} — prep (${ev.courseName||ev.course||""})`, cat:ev.cat||"SAI", min:sess, pri:6, kind:"focus", eid:ev.id, fixed:true });
-      rem-=sess; i++; g++;
+    const total=Math.round((+ev.estHrs||0)*60); if(total<=0) return;
+    const full=[]; for(let k=7;k>=1;k--){ const dd=dstr(addD(parseD(ev.date),-k)); if(dd>=todayStr()) full.push(dd); }
+    if(!full.length) return;
+    const nd=Math.max(1,Math.min(full.length,Math.round(total/45)));
+    const use=full.slice(-nd), quota=Math.ceil(total/use.length);
+    let rem=total, vi=0;
+    for(const dd of use){
+      if(rem<=0) break;
+      const sess=Math.min(60,quota,rem);
+      const d=byDate[dd]; if(!d) continue;
+      d.tasks.push({ key:`focus:${ev.id}:${vi}`, title:`🎯 ${ev.title} — prep (${ev.courseName||ev.course||""})`, cat:ev.cat||"SAI", min:sess, pri:6, kind:"focus", eid:ev.id, fixed:true });
+      rem-=sess; vi++;
     }
   });
   // 2) IIT chunks → spread EVENLY across all 7 days (water-filling, scaled by playback speed).
@@ -665,11 +675,16 @@ function runSelfTest(){
   }catch(e){ res.push(["✗","book threw: "+e.message]); }
   try{
     const snapB=S.backlog;
-    S.tests.push({id:"__cz__",sys:"sai",course:"DAA",title:"",date:dstr(addD(parseD(todayStr()),2)),prepMode:"h",qty:1,perQ:4});
+    // W = next weekday strictly after today (deterministic anchor for window math)
+    let W=parseD(todayStr());
+    for(let k=0;k<8;k++){ W=addD(parseD(todayStr()),k+1); const w=wd(W); if(w!=="Sat"&&w!=="Sun") break; }
+    const Wd=dstr(W);
+    S.tests.push({id:"__cz__",sys:"sai",course:"DAA",title:"",date:dstr(addD(W,1)),prepMode:"h",qty:1,perQ:4});
     S.crunch={days:2,pause:["sai"]};
-    const paused=!buildWeek(weekOf(todayStr())).find(d=>d.date===todayStr()).tasks.some(t=>t.key.slice(-5)==="::sai");
+    const paused=!buildWeek(weekOf(Wd)).find(d=>d.date===Wd).tasks.some(t=>t.key.slice(-5)==="::sai");
     const nB=S.backlog.length;
-    S.tests.find(t=>t.id==="__cz__").date=dstr(addD(parseD(todayStr()),-1)); // move test to past → payback
+    S.tests.find(t=>t.id==="__cz__").date=dstr(addD(W,-7)); // same weekday last week (past) → payback window hits weekdays
+    S.crunch={days:5,pause:["sai"]};
     autoRelocate();
     const paid=S.backlog.length>nB;
     S.tests=S.tests.filter(t=>t.id!=="__cz__"); S.backlog=snapB;
@@ -677,14 +692,17 @@ function runSelfTest(){
     res.push([(paused&&paid)?"✓":"✗",`crunch: Sai paused pre-test (${paused}), payback returned after (${paid})`]);
   }catch(e){ try{S.crunch={days:3,pause:["sai","cf","oss"]};}catch(_){} res.push(["✗","crunch threw: "+e.message]); }
   try{
-    const snapB2=S.backlog, snapI=S.installed;
-    const touched=[]; S.modules.forEach(m=>m.videos.forEach(v=>{ if(!v.done){ v.done=true; touched.push(v); } })); // silence governor: isolate carry policy
+    const snapB2=S.backlog, snapI=S.installed, snapT=S.tests;
+    const touched=[]; S.modules.forEach(m=>m.videos.forEach(v=>{ if(!v.done){ v.done=true; touched.push(v); } })); // silence governor videos
+    const tbSnap=[]; S.modules.forEach(m=>{ tbSnap.push([m,m.textbook]); m.textbook=0; }); // + textbooks
+    S.tests=[]; // + upcoming-test load: isolate carry policy purely
     S.installed=dstr(addD(new Date(),-7)); S.backlog=[];
     autoRelocate();
     const keys=S.backlog.map(b=>b.fromKey||"");
     const saiCarried=keys.some(k=>k.slice(-5)==="::sai");
     const dailyLeaked=keys.some(k=>/::(nc|cf|cfcon|algo|dbms|oss|rev)$/.test(k));
-    S.backlog=snapB2; S.installed=snapI; touched.forEach(v=>v.done=false);
+    S.backlog=snapB2; S.installed=snapI; S.tests=snapT;
+    touched.forEach(v=>v.done=false); tbSnap.forEach(([m,tb])=>{ m.textbook=tb; });
     res.push([(saiCarried&&!dailyLeaked)?"✓":"✗",`selective carry: SaiU carried (${saiCarried}), daily must-tasks lapsed (${!dailyLeaked})`]);
   }catch(e){ res.push(["✗","carry policy threw: "+e.message]); }
   try{
@@ -749,16 +767,21 @@ function runSelfTest(){
     res.push([(stamped&&countsToday&&notElsewhere&&vdMin&&undone)?"✓":"✗",`video dates: tick stamps ${todayStr()}, counts only that day in streak math`]);
   }catch(e){ res.push(["✗","videodates threw: "+e.message]); }
   try{
+    // fake course = collision-free pool (deterministic regardless of real test crowding)
+    S.modules.push({id:"__zm__",course:"ZZZ",week:triWeek(),title:"t",textbook:0,videos:[{label:"Za",minutes:20,done:false},{label:"Zb",minutes:20,done:false},{label:"Zc",minutes:20,done:false}]});
     const monA=dstr(addD(monday(0),7));
-    S.tests.push({id:"__ad__",sys:"iitg",course:"Java",type:"proctored",date:monA,time:"08:00"});
-    const offsA=[...new Set([0,1,weekOf(monA)])];
-    const allA=offsA.flatMap(o=>buildWeek(o).flatMap(d=>d.tasks.map(t=>({t,date:d.date}))));
+    S.tests.push({id:"__ad__",sys:"iitg",course:"ZZZ",type:"proctored",date:monA,time:"08:00"});
+    RENDERCLAIM={}; // one render pass across weeks — shared claims like the real UI
+    const offsA=[0,1,2,weekOf(monA)];
+    const allA=[...new Set(offsA)].flatMap(o=>buildWeek(o).flatMap(d=>d.tasks.map(t=>({t,date:d.date}))));
+    RENDERCLAIM=null;
     const pres=allA.filter(x=>x.t.key.indexOf("test:__ad__:prep")===0);
-    const adopted=new Set(); pres.forEach(x=>(x.t.vids||[]).forEach(v=>adopted.add(v.modId+"||"+v.label)));
+    const adopted=[]; pres.forEach(x=>(x.t.vids||[]).forEach(v=>adopted.push(v.modId+"||"+v.label)));
+    const dupAdopt=adopted.filter((k,i)=>adopted.indexOf(k)!==i);
     const chunks=allA.filter(x=>x.t.kind==="iit"&&!x.t.tb).map(x=>x.t.modId+"||"+x.t.vlabel);
-    const doubleBooked=[...adopted].filter(k=>chunks.includes(k));
-    S.tests=S.tests.filter(t=>t.id!=="__ad__");
-    res.push([(pres.length>0&&adopted.size>0&&doubleBooked.length===0)?"✓":"✗",`prep adopts real videos (${adopted.size} named, ${pres.length} sessions), zero double-booking`]);
+    const doubleBooked=[...new Set(adopted)].filter(k=>chunks.includes(k));
+    S.tests=S.tests.filter(t=>t.id!=="__ad__"); S.modules=S.modules.filter(m=>m.id!=="__zm__");
+    res.push([(pres.length>0&&adopted.length>0&&dupAdopt.length===0&&doubleBooked.length===0)?"✓":"✗",`prep adopts real videos across weeks (${adopted.length} named, no repeats, no double-booking)`]);
   }catch(e){ res.push(["✗","adopt threw: "+e.message]); }
   try{
     const p0=govPause().pause.slice();
@@ -777,7 +800,7 @@ function runSelfTest(){
 
 /* ---------- render ---------- */
 const $=id=>document.getElementById(id);
-function renderAll(){ renderToday(); renderWeek(); renderCalendar(); renderModules(); renderTests(); renderBooks(); renderGoals(); renderSettings(); renderDiag(); }
+function renderAll(){ RENDERCLAIM={}; try{ renderToday(); renderWeek(); renderCalendar(); renderModules(); renderTests(); renderBooks(); renderGoals(); renderSettings(); renderDiag(); }finally{ RENDERCLAIM=null; } }
 $("bAdd").onclick=()=>{
   const ti=$("bTitle").value.trim();
   const chs=parseDurations($("bChapters").value).filter(x=>x.minutes>0).map(x=>({name:x.label.slice(0,80),pages:x.minutes,done:0}));
@@ -974,6 +997,7 @@ function eventFit(dateStr, estHrs){
 }
 /* Calendar: month grid + clickable day panel + event focus planner. */
 let calOff=0, selDate=todayStr(); const pendingHolds=new Set();
+let RENDERCLAIM=null; // per-render shared video-claim registry (reset each renderAll)
 function renderCalendar(){
   if(!$("calGrid")) return;
   const now=new Date(), base=new Date(now.getFullYear(),now.getMonth()+calOff,1);
