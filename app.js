@@ -655,9 +655,12 @@ function runSelfTest(){
   }catch(e){ res.push(["✗","catch-up threw: "+e.message]); }
   try{
     const dd=buildWeek(0), perDay=dd.map(d=>d.tasks.filter(x=>x.kind==="iit").reduce((a,x)=>a+x.min,0));
-    const used=perDay.filter(m=>m>0).length;
+    const vidDays=new Set();
+    dd.forEach(d=>d.tasks.forEach(t=>{
+      if((t.kind==="iit"&&!t.tb)||((t.vids||[]).length)) vidDays.add(d.date);
+    }));
     const flexOk=dd.every(d=>d.tasks.reduce((a,t)=>a+((t.kind==="test"||t.kind==="focus")?0:t.min),0)<=d.cap);
-    res.push([(used>=5&&flexOk)?"✓":"✗",`IIT spread: ${used}/7 days share the load (${perDay.join("/")}); non-test load never breaches caps`]);
+    res.push([(vidDays.size>=4&&flexOk)?"✓":"✗",`IIT spread: videos surface on ${vidDays.size}/7 days as sessions or inside prep (${perDay.join("/")}); non-test load never breaches caps`]);
   }catch(e){ res.push(["✗","spread threw: "+e.message]); }
   try{
     const th2=dstr(addD(parseD(todayStr()),2));
@@ -1187,10 +1190,11 @@ function renderSettings(){
   if($("collegeList")) $("collegeList").querySelectorAll("[data-cday]").forEach(a=>a.onclick=e=>{ e.preventDefault(); S.college[a.dataset.cday].splice(+a.dataset.cidx,1); save(); renderAll(); });
 }
 
-/* Trimester module seeds (full official lists). Versioned: v2 replaces the old
-   Week-1-only seeds, preserving any ticks by matching course+label. */
+/* Trimester module seeds (videos + practice sets only — no slide readings;
+   textbook time lives in per-module reading minutes). v3 reloads the dataset
+   and strips slide readings from older installs, preserving ticks by label. */
 function seedWeek1(){
-  if(S.seedVer>=2) return;
+  if(S.seedVer>=3) return;
   const doneByLabel={};
   (S.modules||[]).forEach(m=>(m.videos||[]).forEach(v=>{ if(v.done) doneByLabel[m.course+"||"+v.label]={at:v.doneAt||null}; }));
   S.modules=(S.modules||[]).filter(m=>!m.seed);
@@ -1200,8 +1204,8 @@ function seedWeek1(){
     S.modules.push({ id:S.seq++, course:sm.course, week:sm.week, title:sm.title, seed:true, textbook:30,
       videos: sm.videos.map(r=>{ const k=doneByLabel[sm.course+"||"+r[0]]; return { label:r[0], minutes:r[1], done:!!k, doneAt:k?k.at:null }; }) });
   });
-  S.seeded=true; S.seedVer=2;
-  addLog(`Loaded full trimester dataset (${list.length} modules) — future weeks unlock automatically`);
+  S.seeded=true; S.seedVer=3;
+  addLog(`Loaded trimester dataset v3 — videos + practice only (${list.length} modules)`);
   save();
 }
 /* College timetable (blocked hours — never scheduled over).
