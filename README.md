@@ -5,7 +5,7 @@ Option A (easiest): open File Explorer → `C:\Users\Administrator\.gemini\study
 Option B: in that folder run `python -m http.server 8000`, then open `http://localhost:8000`.
 
 ## How to check it's working
-1. **Settings → Run self-test** — expect 20 ✓ lines.
+1. **Settings → Run self-test** — expect 21 ✓ lines.
 2. **IIT Modules → Preview parse** with the example text — expect "3 videos · total ~78 min".
 3. **Today**: tick a box → progress bar moves → reload the page → tick persists.
 4. **Relocation proof**: leave a task unticked → next day open the app → orange banner "Auto-relocated N unfinished task(s)" + entry in the Relocation log + `↩` item in a future day (Week tab).
@@ -21,7 +21,7 @@ Local-first planner. Double-click `index.html` (or serve with `python -m http.se
 - **Settings**: daily self-study capacity (default 300 wkday / 420 wkend mins). Scheduler rebuilds automatically.
 
 ## Smart rules
-- Missed work → <b>only SaiU + IITG carries over</b> (Sai rotation, SaiU tests/prep, books, customs, IIT videos/textbook). Everyday must-tasks (NeetCode, CF, GATE, OWASP, revision) lapse — streak takes the hit, no flood. Carried items are auto-moved on every start/tick and take the earliest fitting free slots (most-overdue first, max 2/day). Anything without room stays visibly **⏳ queued** and is retried weekly — days never exceed their 4–6h cap for flexible work; red only means fixed commitments overflowed and need trims or catch-up mode.
+- Missed work → <b>only SaiU + IITG carries over</b> (Sai rotation, SaiU tests/prep, customs, IIT videos/textbook). Book pages persist so reading sessions regenerate (no backlog copy). Everyday must-tasks (NeetCode, CF, GATE, OWASP, revision) lapse — streak takes the hit, no flood. Carried items are auto-moved on every start/tick and take the earliest fitting free slots (most-overdue first, max 2/day). When a week ends, leftovers stay visible (scheduled or ⏳ queued) and Today always snaps back to the current week. Anything without room stays visibly **⏳ queued** and is retried weekly — days never exceed their 4–6h cap for flexible work; red only means fixed commitments overflowed and need trims or catch-up mode.
 - IIT videos auto-carry (undone videos reschedule every rebuild).
 - Lagging (150m+ backlog or 3d overdue) → one-click **catch-up plan** lightens CF/OWASP until backlog < 60m, then auto-exits.
 - **College hours** (seeded from the SaiU sheet: Sec 3 + ETA Sec 2) are blocked and never scheduled over; edit them in Settings.

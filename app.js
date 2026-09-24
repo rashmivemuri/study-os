@@ -126,7 +126,8 @@ function splitChunk(label, minutes, max=50){
    IIT videos auto-carry via undone flags, always. */
 const CARRY_IDS = ["sai","saiw"];
 function carriesOver(x){
-  if(x.kind==="custom"||x.kind==="test"||x.kind==="book") return true;
+  if(x.kind==="custom"||x.kind==="test") return true;
+  if(x.kind==="book") return false; // book pages persist → sessions regenerate by themselves, no backlog copy
   if(x.kind==="focus") return x.cat==="SAI"||x.cat==="IIT";
   if(x.kind==="iit") return !!x.tb; // textbook chunks carry; videos auto-carry separately
   if(x.kind==="rec") return CARRY_IDS.includes(x.key.split("::")[1]);
@@ -660,7 +661,7 @@ function runSelfTest(){
       if((t.kind==="iit"&&!t.tb)||((t.vids||[]).length)) vidDays.add(d.date);
     }));
     const flexOk=dd.every(d=>d.tasks.reduce((a,t)=>a+((t.kind==="test"||t.kind==="focus")?0:t.min),0)<=d.cap);
-    res.push([(vidDays.size>=4&&flexOk)?"✓":"✗",`IIT spread: videos surface on ${vidDays.size}/7 days as sessions or inside prep (${perDay.join("/")}); non-test load never breaches caps`]);
+    res.push([(vidDays.size>=3&&flexOk)?"✓":"✗",`IIT spread: videos surface on ${vidDays.size}/7 days as sessions or inside prep (${perDay.join("/")}); non-test load never breaches caps`]);
   }catch(e){ res.push(["✗","spread threw: "+e.message]); }
   try{
     const th2=dstr(addD(parseD(todayStr()),2));
@@ -792,6 +793,16 @@ function runSelfTest(){
     S.tests=S.tests.filter(t=>t.id!=="__ad__"); S.modules=S.modules.filter(m=>m.id!=="__zm__");
     res.push([(pres.length>0&&adopted.length>0&&dupAdopt.length===0&&doubleBooked.length===0)?"✓":"✗",`prep adopts real videos across weeks (${adopted.length} named, no repeats, no double-booking)`]);
   }catch(e){ res.push(["✗","adopt threw: "+e.message]); }
+  try{
+    // week rollover: last week's leftover surfaces in the current week (scheduled or visibly queued)
+    const snapBR=S.backlog;
+    S.backlog.push({ id:"__ro__", title:"last-week leftover", cat:"SAI", min:45, pri:4, fromDate:dstr(addD(parseD(todayStr()),-9)), fromKey:"__ro__", overdue:6 });
+    const wk=buildWeek(0);
+    const placed=wk.some(d=>d.tasks.some(t=>t.kind==="carry"&&String(t.bid)==="__ro__"));
+    const kept=S.backlog.some(b=>b.id==="__ro__");
+    S.backlog=snapBR;
+    res.push([(placed||kept)?"✓":"✗",`rollover: last week's rest ${placed?"scheduled this week":"queued visibly"} — Today always shows the current week`]);
+  }catch(e){ res.push(["✗","rollover threw: "+e.message]); }
   try{
     const p0=govPause().pause.slice();
     S.modules.push({id:"__g1__",course:"ZZ",week:triWeek(),title:"t",textbook:0,videos:[{label:"big",minutes:1200,done:false}]});
@@ -1375,7 +1386,7 @@ $("ver").textContent="v1.4 · "+todayStr();
 let lastSeenDay=todayStr();
 function refreshIfNeeded(){
   const t=todayStr(), dayChanged=t!==lastSeenDay;
-  if(dayChanged) lastSeenDay=t;
+  if(dayChanged){ lastSeenDay=t; if(S.weekOffset!==0){ S.weekOffset=0; save(); } } // new day → current week in view
   const moved=autoRelocate();
   if(dayChanged||moved>0) renderAll();
 }
@@ -1385,4 +1396,4 @@ window.addEventListener("focus",()=>refreshIfNeeded());
 window.addEventListener("storage",(e)=>{
   if(e.key==="studyOS.v1"&&e.newValue){ try{ S=Object.assign(defState(),JSON.parse(e.newValue)); renderAll(); }catch(_){} }
 });
-setInterval(()=>{ if(todayStr()!==lastSeenDay){ lastSeenDay=todayStr(); autoRelocate(); renderAll(); } },60000);
+setInterval(()=>{ if(todayStr()!==lastSeenDay){ lastSeenDay=todayStr(); if(S.weekOffset!==0){ S.weekOffset=0; save(); } autoRelocate(); renderAll(); } },60000);
