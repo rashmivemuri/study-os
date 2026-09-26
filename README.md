@@ -5,7 +5,7 @@ Option A (easiest): open File Explorer → `C:\Users\Administrator\.gemini\study
 Option B: in that folder run `python -m http.server 8000`, then open `http://localhost:8000`.
 
 ## How to check it's working
-1. **Settings → Run self-test** — expect 21 ✓ lines.
+1. **Settings → Run self-test** — expect 22 ✓ lines.
 2. **IIT Modules → Preview parse** with the example text — expect "3 videos · total ~78 min".
 3. **Today**: tick a box → progress bar moves → reload the page → tick persists.
 4. **Relocation proof**: leave a task unticked → next day open the app → orange banner "Auto-relocated N unfinished task(s)" + entry in the Relocation log + `↩` item in a future day (Week tab).
@@ -28,8 +28,7 @@ Local-first planner. Double-click `index.html` (or serve with `python -m http.se
 - **SaiU tests**: give the date + your prep plan (N PYQs or H hours) — time auto-spreads over prior days in ≤60m sessions.
 - **Book plans** (CLRS): chapters + deadline → pages/week pace + ≤15m daily sessions inside an adaptive budget (scales with IIT completion + college load, pauses while lagging); log pages read to shrink them. Finishing the whole book in-sem is optional — the card shows the honest projected finish date.
 - **Crunch mode** (universal): within N days of any test, chosen subjects pause to fund prep; paused work returns as payback backlog after the test (per-test ⚡ toggle to exempt).
-- **IITG tests**: Proctored (120m exam) / Non-Proctored (60m) labels everywhere. Prep totals (150m/45m) spread over the immediate pre-days so daily amounts scale with distance-to-test (≤60m/day); morning exams skip same-day cram. Exam days auto-lighten (Sai/CF paused).
-- **IITG tests**: Proctored (120m exam) / Non-Proctored (60m) labels everywhere. Prep totals (150m/45m) spread over the immediate pre-days so daily amounts scale with distance-to-test (≤60m/day); morning exams skip same-day cram. Exam days auto-lighten (Sai/CF paused).
+- **IITG tests**: Proctored (120m exam) / Non-Proctored (30m) labels everywhere. Each test declares which modules it covers (auto: PT → its week + previous, NPT → previous week — your Module-2-NPT case). Prep sessions name those videos one-per-session with two-way ticking, plus a single revise block, never double-booked. Morning exams skip same-day cram. Exam days auto-lighten (Sai/CF paused).
 - **Proctored two-slot rule**: miss slot 1 and the test shifts to the course's same-weekend backup slot (official Slot B: RDBMS Sat 19:30, Java Sat 20:30, Optimization Sun 19:30 — editable per course); prep, crunch, and backlog rebuild around it. Each course's videos spread Mon→exam-eve only, so material finishes before its exam.
 - **Evening trim**: as the 9:30 PM–1 AM window burns down, one tap keeps only the top-priority ~hours-left worth; the rest defers by policy (no silent drops).
 - **IIT-first governor**: video demand vs free room is measured weekly — lagging auto-pauses CF → Sai → weekend extras → NeetCode (extremes only) to fit more IIT; everything restores on catch-up, logged.

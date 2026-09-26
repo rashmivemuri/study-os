@@ -110,6 +110,25 @@ function parseDurations(text){
 const TRIM_START = parseD("2026-09-07");
 function triWeek(){ return Math.max(1,Math.floor((new Date()-TRIM_START)/6048e5)+1); }
 function triWeekDate(w){ return dstr(addD(TRIM_START,(w-1)*7)); }
+/* Which trimester weeks a test covers. Explicit `covers` ("2", "1-2") wins;
+   default rule: PT covers its week + previous, NPT covers the previous week
+   (tests assess just-taught material, e.g. week-3 NPT → module 2). */
+function triWeekOf(dateStr){ return Math.max(1,Math.floor((parseD(dateStr)-TRIM_START)/6048e5)+1); }
+function testWeeks(ts){
+  if(ts.covers&&ts.covers.trim()){
+    const out=new Set();
+    ts.covers.split(",").forEach(p=>{
+      const m=p.trim().match(/^(\d+)(?:\s*-\s*(\d+))?$/);
+      if(!m) return;
+      const a=+m[1], b=m[2]?+m[2]:a;
+      for(let w=Math.min(a,b);w<=Math.max(a,b);w++) out.add(w);
+    });
+    if(out.size) return out;
+  }
+  const W=triWeekOf(ts.date), out=new Set([Math.max(1,W-1)]);
+  if(ts.sys!=="sai"&&ts.type==="proctored") out.add(W);
+  return out;
+}
 function iitVideosLeft(){ const out=[]; const cw=triWeek(); S.modules.forEach(mod=>{ if(mod.week>cw) return; mod.videos.forEach((v,vi)=>{ if(!v.done) out.push({mod,v,vi}); }); }); return out; }
 /* Sequential frontier: per course, only the earliest module with undone videos
    schedules. Next module waits until the current one is finished — especially
@@ -279,6 +298,7 @@ function buildWeek(offset){
   function fullWin(ts,back){ const w=[]; for(let k=back;k>=1;k--){ const dd=dstr(addD(parseD(ts.date),-k)); if(dd>=todayStr()) w.push(dd); } return w; }
   function placePrep(prefix, cat, ts, total, pri, label, adoptCourse){
     const full=fullWin(ts,5);
+    const mkTask=(sess,i)=>({ title:label(sess,i), vids:[] });
     if(!full.length){
       const hr=ts.time?+ts.time.split(":")[0]:99; // morning exam → no same-day cram; evening → cram OK
       if(byDate[ts.date]&&ts.date===todayStr()&&hr>=12){ const sess=Math.min(60,total); const t=mkTask(sess,0); byDate[ts.date].tasks.push({ key:`${prefix}:${ts.id}:prep0`, title:t.title, cat, min:sess, pri, kind:"test", fixed:true, vids:t.vids }); }
@@ -295,42 +315,34 @@ function buildWeek(offset){
       vi++;
     };
     if(adoptCourse&&adoptCourse!=="All courses"){
-      // video sessions (named, tickable, two-way synced) on days near the exam only,
-      // then ONE revise session — daily IIT flow keeps unclaimed videos until then
-      const F=frontierMap(), spd=S.speed||1, cands=[];
-      S.modules.forEach(m=>{ if(m.week>triWeek()||F[m.course]!==m||m.course!==adoptCourse) return;
+      // ONE tickable session PER VIDEO from the test's own modules (two-way synced),
+      // spread over the least-loaded window days; then exactly ONE revise session.
+      // Videos outside the covered modules stay in the daily IIT flow untouched.
+      const cover=testWeeks(ts), spd=S.speed||1, cands=[];
+      S.modules.forEach(m=>{ if(m.week>triWeek()||!cover.has(m.week)||m.course!==adoptCourse) return;
         m.videos.forEach(v=>{ if(!v.done&&!v.label.startsWith("📖")&&!claimedVid[m.id+"||"+v.label]) cands.push({mod:m,v}); }); });
-      const horizon=dstr(addD(parseD(ts.date),-3));
-      let near=useDays.filter(dd=>dd>=horizon);
-      if(!near.length) near=useDays.slice(-1);
       const tag=ts.sys==="sai"?"":` ${ts.type==="proctored"?"PT":"NPT"}`;
-      let vi=0, adoptedSum=0, di=0;
-      const groups=[];
-      let cur={mine:[],used:0};
+      const perDay={};
+      let vi=0, adoptedSum=0;
       for(const c of cands){
         if(adoptedSum>=total) break;
         const vm=Math.max(5,Math.round(c.v.minutes/spd));
-        if(vm>30||adoptedSum+vm>total) continue; // oversized stays queued; never exceed the plan
-        if(cur.mine.length>=3||cur.used+vm>30){ if(cur.mine.length) groups.push(cur); cur={mine:[],used:0}; }
-        const key=c.mod.id+"||"+c.v.label;
-        cur.mine.push({c,vm}); cur.used+=vm; adoptedSum+=vm; claimedVid[key]=1;
-      }
-      if(cur.mine.length) groups.push(cur);
-      for(const g of groups){
-        const dd=near[di%near.length]; di++;
+        if(vm>60||adoptedSum+vm>total) continue; // oversized stays queued; never exceed the plan
+        const dd=useDays.slice().sort((a,b)=>((perDay[a]||0)-(perDay[b]||0)))[0];
+        if(!dd) break;
         const d=byDate[dd]; if(!d) continue;
-        d.tasks.push({ key:`${prefix}:${ts.id}:prep${vi}`, title:`📝 ${adoptCourse} ${tag} prep → ${ts.date.slice(5)}: “${g.mine.map(x=>x.c.v.label.slice(0,42)).join("” + “")}” (${g.used}m)`, cat, min:g.used, pri, kind:"test", fixed:true, vids:g.mine.map(x=>({modId:x.c.mod.id,label:x.c.v.label})) });
-        vi++;
+        d.tasks.push({ key:`${prefix}:${ts.id}:prep${vi}`, title:`📝 ${adoptCourse} ${tag} prep → ${ts.date.slice(5)}: “${c.v.label.slice(0,60)}” (${vm}m)`, cat, min:vm, pri, kind:"test", fixed:true, vids:[{modId:c.mod.id,label:c.v.label}] });
+        claimedVid[c.mod.id+"||"+c.v.label]=1;
+        perDay[dd]=(perDay[dd]||0)+vm; adoptedSum+=vm; vi++;
       }
       const revise=Math.min(60,Math.round(total-adoptedSum));
       if(revise>=10){
-        const dd=near[near.length-1];
+        const dd=useDays.slice().sort((a,b)=>((perDay[a]||0)-(perDay[b]||0)))[0]||useDays[useDays.length-1];
         const d=byDate[dd];
         if(d) d.tasks.push({ key:`${prefix}:${ts.id}:prep${vi}`, title:`📝 ${adoptCourse} ${tag} prep: revise + PYQs (${revise}m)`, cat, min:revise, pri, kind:"test", fixed:true, vids:[] });
       }
       return;
     }
-    const mkTask=(sess,i)=>({ title:label(sess,i), vids:[] });
     let rem=total, i=0, g=0;
     for(const dd of useDays){
       if(rem<=0) break;
@@ -778,9 +790,10 @@ function runSelfTest(){
   }catch(e){ res.push(["✗","videodates threw: "+e.message]); }
   try{
     // fake course = collision-free pool (deterministic regardless of real test crowding)
-    S.modules.push({id:"__zm__",course:"ZZZ",week:triWeek(),title:"t",textbook:0,videos:[{label:"Za",minutes:20,done:false},{label:"Zb",minutes:20,done:false},{label:"Zc",minutes:20,done:false}]});
+    const zw=triWeek();
+    S.modules.push({id:"__zm__",course:"ZZZ",week:zw,title:"t",textbook:0,videos:[{label:"Za",minutes:20,done:false},{label:"Zb",minutes:20,done:false},{label:"Zc",minutes:20,done:false}]});
     const monA=dstr(addD(monday(0),7));
-    S.tests.push({id:"__ad__",sys:"iitg",course:"ZZZ",type:"proctored",date:monA,time:"08:00"});
+    S.tests.push({id:"__ad__",sys:"iitg",course:"ZZZ",type:"proctored",date:monA,time:"08:00",covers:String(zw)});
     RENDERCLAIM={}; // one render pass across weeks — shared claims like the real UI
     const offsA=[0,1,2,weekOf(monA)];
     const allA=[...new Set(offsA)].flatMap(o=>buildWeek(o).flatMap(d=>d.tasks.map(t=>({t,date:d.date}))));
@@ -790,9 +803,17 @@ function runSelfTest(){
     const dupAdopt=adopted.filter((k,i)=>adopted.indexOf(k)!==i);
     const chunks=allA.filter(x=>x.t.kind==="iit"&&!x.t.tb).map(x=>x.t.modId+"||"+x.t.vlabel);
     const doubleBooked=[...new Set(adopted)].filter(k=>chunks.includes(k));
+    const oneEach=pres.every(x=>(x.t.vids||[]).length<=1);
     S.tests=S.tests.filter(t=>t.id!=="__ad__"); S.modules=S.modules.filter(m=>m.id!=="__zm__");
-    res.push([(pres.length>0&&adopted.length>0&&dupAdopt.length===0&&doubleBooked.length===0)?"✓":"✗",`prep adopts real videos across weeks (${adopted.length} named, no repeats, no double-booking)`]);
+    res.push([(pres.length>0&&adopted.length>0&&dupAdopt.length===0&&doubleBooked.length===0&&oneEach)?"✓":"✗",`prep adopts real videos across weeks (${adopted.length} named, one per session, no repeats, no double-booking)`]);
   }catch(e){ res.push(["✗","adopt threw: "+e.message]); }
+  try{
+    // covers rule: Oct-11 NPT (week 5) → {4}; Oct-12 PT (week 6) → {5,6}
+    const npt=[...testWeeks({sys:"iitg",course:"RDBMS",type:"nonproctored",date:"2026-10-11"})].sort((a,b)=>a-b);
+    const pt=[...testWeeks({sys:"iitg",course:"RDBMS",type:"proctored",date:"2026-10-12"})].sort((a,b)=>a-b);
+    const exp=[...testWeeks({sys:"iitg",course:"RDBMS",type:"proctored",date:"2026-10-12",covers:"2"})].sort((a,b)=>a-b);
+    res.push([(JSON.stringify(npt)===JSON.stringify([4])&&JSON.stringify(pt)===JSON.stringify([5,6])&&JSON.stringify(exp)===JSON.stringify([2]))?"✓":"✗",`covers rule: NPT→prior week, PT→prior+own, explicit wins`]);
+  }catch(e){ res.push(["✗","covers threw: "+e.message]); }
   try{
     // week rollover: last week's leftover surfaces in the current week (scheduled or visibly queued)
     const snapBR=S.backlog;
@@ -1087,11 +1108,13 @@ function renderTests(){
       ? `📝 SaiU · <b>${t.course}</b>${t.title?" — "+t.title:""}${t.time?` @${fmtTime(t.time)}`:""} <span class="muted">(${t.prepMode==="h"?t.qty+"h material":t.qty+" PYQs"} → ${t.prepMode==="h"?Math.round(t.qty*60):Math.round(t.qty*(t.perQ||4))}m prep)</span>`
       : `${t.type==="proctored"?"📝 Proctored":"📝 Non-Proctored"} · <b>${t.course}</b>${t.time?` @${fmtTime(t.time)}`:""}`;
     const slotNote=(t.sys!=="sai"&&t.type==="proctored")?(()=>{ const b=ptBackupDate({course:t.course,date:t.date,time:t.time}); return ` <span class="muted small">slot 1 ${t.date}${t.time?" "+fmtTime(t.time):""} → backup ${b.date}${b.time?" "+fmtTime(b.time):""}${t.movedToSlot2?" (moved ✓)":" (auto if missed)"}</span>`; })():"";
+    const covNote=(t.sys!=="sai")?` <label class="small muted">covers <input data-covers="${t.id}" value="${t.covers||""}" placeholder="${[...testWeeks(t)].join(",")}" style="width:70px" title="modules this test covers, e.g. 2 or 1-2 (blank = auto)"></label>`:"";
     const p=t.sys==="sai"?"60m exam + auto-spread prep":(t.type==="proctored"?"120m exam + 150m spread prep":"30m exam + 45m spread prep");
-    return `<div class="mod"><b>${t.date}</b> · ${info} <span class="muted">(${p})</span>${slotNote} <button class="btn sm" data-crunch="${t.id}" title="toggle crunch for this test">${t.crunchOff?"⚡ crunch off":"⚡ crunch on"}</button> <button class="btn danger sm" data-deltest="${t.id}">✕</button></div>`;
+    return `<div class="mod"><b>${t.date}</b> · ${info} <span class="muted">(${p})</span>${slotNote}${covNote} <button class="btn sm" data-crunch="${t.id}" title="toggle crunch for this test">${t.crunchOff?"⚡ crunch off":"⚡ crunch on"}</button> <button class="btn danger sm" data-deltest="${t.id}">✕</button></div>`;
   }).join("") : `<p class="muted small">No tests scheduled. Add your alternating IITG series or a SaiU class test below — prep blocks appear automatically on fixed dates.</p>`;
   $("testList").querySelectorAll("[data-deltest]").forEach(b=>b.onclick=()=>{ S.tests=S.tests.filter(t=>String(t.id)!==b.dataset.deltest); save(); renderAll(); });
   $("testList").querySelectorAll("[data-crunch]").forEach(b=>b.onclick=()=>{ const t=(S.tests||[]).find(x=>String(x.id)===b.dataset.crunch); if(t){ t.crunchOff=!t.crunchOff; save(); renderAll(); } });
+  $("testList").querySelectorAll("[data-covers]").forEach(i=>i.onchange=()=>{ const t=(S.tests||[]).find(x=>String(x.id)===i.dataset.covers); if(t){ t.covers=i.value.trim(); save(); renderAll(); } });
   // crunch defaults live-sync
   if($("cDays")) $("cDays").value=S.crunch.days;
   document.querySelectorAll("[data-pz]").forEach(cb=>{ cb.checked=(S.crunch.pause||[]).includes(cb.dataset.pz); });
@@ -1296,8 +1319,8 @@ $("qaAdd").onclick=()=>{
 };
 $("addOneTest").onclick=()=>{
   const d=$("tStart").value||todayStr();
-  S.tests.push({ id:S.seq++, sys:"iitg", course:$("tCourse").value, type:$("tFirst").value, date:d, time:$("tTime").value });
-  save(); renderAll();
+  S.tests.push({ id:S.seq++, sys:"iitg", course:$("tCourse").value, type:$("tFirst").value, date:d, time:$("tTime").value, covers:$("tCovers").value.trim() });
+  $("tCovers").value=""; save(); renderAll();
 };
 $("addAltTests").onclick=()=>{
   const course=$("tCourse").value, start=$("tStart").value||todayStr();
