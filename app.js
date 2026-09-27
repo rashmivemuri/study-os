@@ -521,6 +521,40 @@ function behindInfo(){
   const oldest=S.backlog.reduce((a,b)=>Math.max(a,b.overdue||0),0);
   return { n, mins, oldest, behind: mins>=150||oldest>=3 };
 }
+/* Weekend slot-B date: the Sat/Sun of the Mon–Sun week containing dateStr. */
+function weekendOf(dateStr,wantDay){
+  const idx=(parseD(dateStr).getDay()+6)%7, want=wantDay==="Sun"?6:5;
+  let add=(want-idx+7)%7; if(add===0) add=7;
+  return dstr(addD(parseD(dateStr),add));
+}
+/* Default-to-B: point a proctored test at its weekend slot, keeping slot A as fallback. */
+function toSlotB(t){
+  t.slot=t.slot||"B";
+  const cfg=((S.ptBackup||{})[t.course])||{day:"Sat",time:""};
+  const bday=weekendOf(t.date,cfg.day||"Sat");
+  if(!bday||bday<=t.date){ t.slotA=t.slotA||{date:t.date,time:t.time||""}; t.slotB=t.slotB||{date:t.date,time:t.time||""}; return false; }
+  t.slotA={date:t.date,time:t.time||""};
+  t.slotB={date:bday,time:cfg.time||t.time||""};
+  t.slot="B"; t.date=bday; if(t.slotB.time) t.time=t.slotB.time;
+  return true;
+}
+/* Weekend slot-B date: the Sat/Sun of the Mon–Sun week containing dateStr. */
+function weekendOf(dateStr,wantDay){
+  const idx=(parseD(dateStr).getDay()+6)%7, want=wantDay==="Sun"?6:5;
+  let add=(want-idx+7)%7; if(add===0) add=7;
+  return dstr(addD(parseD(dateStr),add));
+}
+/* Default-to-B: point a proctored test at its weekend slot, keeping slot A as fallback. */
+function toSlotB(t){
+  t.slot=t.slot||"B";
+  const cfg=((S.ptBackup||{})[t.course])||{day:"Sat",time:""};
+  const bday=weekendOf(t.date,cfg.day||"Sat");
+  if(!bday||bday<=t.date){ t.slotA=t.slotA||{date:t.date,time:t.time||""}; t.slotB=t.slotB||{date:t.date,time:t.time||""}; return false; }
+  t.slotA={date:t.date,time:t.time||""};
+  t.slotB={date:bday,time:cfg.time||t.time||""};
+  t.slot="B"; t.date=bday; if(t.slotB.time) t.time=t.slotB.time;
+  return true;
+}
 /* Weekend backup for a missed proctored slot-1: same week's configured Sat/Sun
    (constant per course, set in Tests card). */
 function ptBackupDate(ts){
@@ -543,13 +577,16 @@ function isStalePrep(x){ return prepExamDate(x)!==null; }
 function autoRelocate(){
   if(!Array.isArray(S.log)) S.log=[];
   const t=todayStr(); let moved=0;
-  // proctored two-slot rule: slot-1 unticked → shift to the course's same-weekend backup slot
+  // proctored two-slot rule: slot-A unticked → shift to slot B (recorded on the test)
   (S.tests||[]).forEach(ts=>{
     if(ts.type!=="proctored"||ts.movedToSlot2||!ts.date||!(ts.date<t)) return;
+    if((ts.slot||"A")==="B") return; // already on backup — generic carry handles leftovers
     if(isDone(ts.date,`test:${ts.id}:exam`)) return; // attempted — stays
     const s2=ptBackupDate(ts);
     addLog(`"${ts.course} proctored" not attempted ${ts.date} → backup slot ${s2.date}${s2.time?" "+fmtTime(s2.time):""}; crunch + prep rebuilt, backlog reshapes upcoming days`);
-    ts.date=s2.date; if(s2.time) ts.time=s2.time; ts.movedToSlot2=true;
+    ts.slotA=ts.slotA||{date:ts.date,time:ts.time||""};
+    ts.slotB={date:s2.date,time:s2.time||ts.time||""};
+    ts.slot="B"; ts.date=s2.date; if(s2.time) ts.time=s2.time; ts.movedToSlot2=true;
     save();
   });
   const since=S.installed||t; // never backfill days before install
@@ -755,6 +792,15 @@ function runSelfTest(){
     S.tests=S.tests.filter(t=>t.id!=="__sl__");
     res.push([okSlot?"✓":"✗",`proctored slots: unticked slot-1 auto-shifted to Sat backup (${movedT?movedT.date:"?"})`]);
   }catch(e){ res.push(["✗","slots threw: "+e.message]); }
+  try{
+    // slot-B default: a Monday PT lands on that week's Saturday; toggle restores Monday
+    const tb={sys:"iitg",course:"RDBMS",type:"proctored",date:"2026-09-28",time:"08:30"};
+    const expB=weekendOf("2026-09-28",((S.ptBackup||{}).RDBMS||{}).day||"Sat");
+    const okB=toSlotB(tb)&&tb.date===expB&&tb.slot==="B"&&tb.slotA.date==="2026-09-28";
+    tb.slot="A"; tb.date=tb.slotA.date; tb.time=tb.slotA.time;
+    const okA=tb.date==="2026-09-28"&&tb.slot==="A";
+    res.push([(okB&&okA)?"✓":"✗",`slot default B (${expB}) with one-tap switch back to A`]);
+  }catch(e){ res.push(["✗","slotdefault threw: "+e.message]); }
   try{
     // supremacy: bury the week in backlog, then demand a Monday PT — exam+prep must survive whole
     const snapBT=S.backlog;
@@ -1107,13 +1153,24 @@ function renderTests(){
     const info=t.sys==="sai"
       ? `📝 SaiU · <b>${t.course}</b>${t.title?" — "+t.title:""}${t.time?` @${fmtTime(t.time)}`:""} <span class="muted">(${t.prepMode==="h"?t.qty+"h material":t.qty+" PYQs"} → ${t.prepMode==="h"?Math.round(t.qty*60):Math.round(t.qty*(t.perQ||4))}m prep)</span>`
       : `${t.type==="proctored"?"📝 Proctored":"📝 Non-Proctored"} · <b>${t.course}</b>${t.time?` @${fmtTime(t.time)}`:""}`;
-    const slotNote=(t.sys!=="sai"&&t.type==="proctored")?(()=>{ const b=ptBackupDate({course:t.course,date:t.date,time:t.time}); return ` <span class="muted small">slot 1 ${t.date}${t.time?" "+fmtTime(t.time):""} → backup ${b.date}${b.time?" "+fmtTime(b.time):""}${t.movedToSlot2?" (moved ✓)":" (auto if missed)"}</span>`; })():"";
+    const slotNote=(t.sys!=="sai"&&t.type==="proctored")?(()=>{
+      const cur=(t.slot||"B"), A=t.slotA, B=t.slotB;
+      const at=t.time?` ${fmtTime(t.time)}`:"";
+      const alt=cur==="B"&&A?` (slot A was ${A.date}${A.time?" "+fmtTime(A.time):""})`:(cur==="A"&&B?` (slot B: ${B.date}${B.time?" "+fmtTime(B.time):""})`:"");
+      return ` <span class="muted small">Slot ${cur} · ${t.date}${at}${t.movedToSlot2?" (moved ✓)":""}${alt}</span> <button class="btn sm" data-slot="${t.id}" title="switch attempt slot">→ ${cur==="B"?"A":"B"}</button>`;
+    })():"";
     const covNote=(t.sys!=="sai")?` <label class="small muted">covers <input data-covers="${t.id}" value="${t.covers||""}" placeholder="${[...testWeeks(t)].join(",")}" style="width:70px" title="modules this test covers, e.g. 2 or 1-2 (blank = auto)"></label>`:"";
     const p=t.sys==="sai"?"60m exam + auto-spread prep":(t.type==="proctored"?"120m exam + 150m spread prep":"30m exam + 45m spread prep");
     return `<div class="mod"><b>${t.date}</b> · ${info} <span class="muted">(${p})</span>${slotNote}${covNote} <button class="btn sm" data-crunch="${t.id}" title="toggle crunch for this test">${t.crunchOff?"⚡ crunch off":"⚡ crunch on"}</button> <button class="btn danger sm" data-deltest="${t.id}">✕</button></div>`;
   }).join("") : `<p class="muted small">No tests scheduled. Add your alternating IITG series or a SaiU class test below — prep blocks appear automatically on fixed dates.</p>`;
   $("testList").querySelectorAll("[data-deltest]").forEach(b=>b.onclick=()=>{ S.tests=S.tests.filter(t=>String(t.id)!==b.dataset.deltest); save(); renderAll(); });
   $("testList").querySelectorAll("[data-crunch]").forEach(b=>b.onclick=()=>{ const t=(S.tests||[]).find(x=>String(x.id)===b.dataset.crunch); if(t){ t.crunchOff=!t.crunchOff; save(); renderAll(); } });
+  $("testList").querySelectorAll("[data-slot]").forEach(b=>b.onclick=()=>{
+    const t=(S.tests||[]).find(x=>String(x.id)===b.dataset.slot); if(!t) return;
+    if((t.slot||"B")==="B"&&t.slotA&&t.slotA.date){ t.slotB=t.slotB||{date:t.date,time:t.time||""}; t.slot="A"; t.date=t.slotA.date; if(t.slotA.time) t.time=t.slotA.time; }
+    else if(t.slot==="A"){ toSlotB(t); }
+    save(); renderAll();
+  });
   $("testList").querySelectorAll("[data-covers]").forEach(i=>i.onchange=()=>{ const t=(S.tests||[]).find(x=>String(x.id)===i.dataset.covers); if(t){ t.covers=i.value.trim(); save(); renderAll(); } });
   // crunch defaults live-sync
   if($("cDays")) $("cDays").value=S.crunch.days;
@@ -1125,8 +1182,8 @@ function renderTests(){
    seeds are ~3rd-edition estimates); pace = remaining pages ÷ weeks to deadline. */
 /* Dated exam seeds: full PT/NPT trimester series. Runs once per version. */
 function seedTests(){
-  if(S.testVer>=5) return;
-  S.testSeeded=true; S.testFullSeeded=true; S.testVer=5;
+  if(S.testVer>=6) return;
+  S.testSeeded=true; S.testFullSeeded=true; S.testVer=6;
   // official slot-B backups (constant per course): RDBMS Sat 19:30, Java Sat 20:30, Opt Sun 19:30
   const SLOTB={RDBMS:{day:"Sat",time:"19:30"},Java:{day:"Sat",time:"20:30"},Optimization:{day:"Sun",time:"19:30"}};
   S.ptBackup=S.ptBackup||{};
@@ -1153,13 +1210,22 @@ function seedTests(){
     const k=`${t.course}|${t.type}|${t.date}`;
     if(TIME_FIX[k]&&t.time==="08:30"){ t.time=TIME_FIX[k]; }
   });
+  // slot-B default: future weekday proctored tests move to their weekend slot (A kept as fallback)
+  const nowT=todayStr();
+  (S.tests||[]).forEach(t=>{
+    if(t.sys==="sai"||t.type!=="proctored"||t.slot||t.movedToSlot2) return;
+    if(!t.date||t.date<nowT) return;
+    if(toSlotB(t)) addLog(`"${t.course} proctored" set to slot B (${t.date}${t.time?" "+fmtTime(t.time):""}) — slot A kept as fallback`);
+  });
   let added=0;
   (typeof SEED_TESTS!=="undefined"?SEED_TESTS:[]).forEach(t=>{
     if(!(S.tests||[]).some(x=>x.course===t.course&&x.type===t.type&&x.date===t.date)){
-      S.tests.push(Object.assign({ id:S.seq++ },t)); added++;
+      const e=Object.assign({ id:S.seq++ },t);
+      if(e.sys!=="sai"&&e.type==="proctored"&&e.date>=nowT) toSlotB(e);
+      S.tests.push(e); added++;
     }
   });
-  if(added) addLog(`Seeded full PT/NPT series (${added} tests) — Mondays PT, Sundays NPT`);
+  if(added) addLog(`Seeded full PT/NPT series (${added} tests) — proctored default to weekend slot B`);
   save();
 }
 function seedBooks(){
@@ -1319,14 +1385,16 @@ $("qaAdd").onclick=()=>{
 };
 $("addOneTest").onclick=()=>{
   const d=$("tStart").value||todayStr();
-  S.tests.push({ id:S.seq++, sys:"iitg", course:$("tCourse").value, type:$("tFirst").value, date:d, time:$("tTime").value, covers:$("tCovers").value.trim() });
+  const e={ id:S.seq++, sys:"iitg", course:$("tCourse").value, type:$("tFirst").value, date:d, time:$("tTime").value, covers:$("tCovers").value.trim() };
+  if(e.type==="proctored") toSlotB(e);
+  S.tests.push(e);
   $("tCovers").value=""; save(); renderAll();
 };
 $("addAltTests").onclick=()=>{
   const course=$("tCourse").value, start=$("tStart").value||todayStr();
   let type=$("tFirst").value;
   const n=Math.max(1,Math.min(16,+$("tWeeks").value||8));
-  for(let i=0;i<n;i++){ S.tests.push({ id:S.seq++, sys:"iitg", course, type, date:dstr(addD(parseD(start),i*7)) }); type=(type==="proctored")?"nonproctored":"proctored"; }
+  for(let i=0;i<n;i++){ const e={ id:S.seq++, sys:"iitg", course, type, date:dstr(addD(parseD(start),i*7)) }; if(type==="proctored") toSlotB(e); S.tests.push(e); type=(type==="proctored")?"nonproctored":"proctored"; }
   save(); renderAll();
   alert(`${n} alternating tests added starting ${start} — prep blocks placed on fixed dates.`);
 };
@@ -1387,7 +1455,7 @@ $("cAdd").onclick=()=>{
   $("cStart").value="";$("cEnd").value="";$("cTitle").value=""; save(); renderAll();
 };
 if($("speedSel")) $("speedSel").onchange=e=>{ S.speed=parseFloat(e.target.value)||1; save(); renderAll(); };
-$("ver").textContent="v1.4 · "+todayStr();
+$("ver").textContent="v1.5 · "+todayStr();
 (function init(){
   const q=$("qaDate"); if(q) q.value=todayStr();
   if($("tStart")&&!$("tStart").value){ const n=new Date(); $("tStart").value=dstr(addD(n,(7-n.getDay())%7||7)); } // default: next Sunday
